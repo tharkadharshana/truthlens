@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ink: #0a0a0f;
+  --paper: #0d0e14;
+  --line: #1c1e2a;
+  --verdict: #c8a456;     /* aged-brass — the "seal" accent */
+  --verdict-dim: #7a6638;
+  --support: #5ba37f;
+  --alter: #c87f56;
+  --absent: #6b7280;
+}
+
+html { color-scheme: dark; }
+
+body {
+  background: var(--ink);
+  color: #e8e6e0;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Respect reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* Monospace ledger feel for data */
+.ledger { font-variant-numeric: tabular-nums; }
+
+/* Focus visibility — accessibility floor */
+*:focus-visible {
+  outline: 2px solid var(--verdict);
+  outline-offset: 2px;
+}
