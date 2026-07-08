@@ -9,24 +9,53 @@ import OpenAI from 'openai'
 const EMBED_MODEL = 'gemini-embedding-001'
 const EMBED_DIMENSIONS = 768
 
-export async function embedText(text: string): Promise<number[]> {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${EMBED_MODEL}:embedContent?key=${process.env.GEMINI_API_KEY}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: `models/${EMBED_MODEL}`,
-        content: { parts: [{ text }] },
-        outputDimensionality: EMBED_DIMENSIONS,
-      }),
-    }
-  )
-  if (!res.ok) {
-    throw new Error(`Gemini embedContent failed: ${res.status} ${await res.text()}`)
+// Embedding has no cross-provider fallback (schema is a fixed vector(768)
+// tied to this one model's output) — a sustained Gemini outage still fails
+// every claim in a request. This only smooths over the transient case we
+// actually hit in testing: a 429 with a server-suggested retry delay that
+// succeeds once that delay passes. ponytail: 3 attempts, respects Gemini's
+// own RetryInfo.retryDelay when present, else exponential backoff (1s/2s).
+// Upgrade: real multi-provider embedding needs a re-embed-the-corpus
+// migration strategy, not just a retry loop — separate decision.
+const EMBED_MAX_ATTEMPTS = 3
+
+export function parseRetryDelaySeconds(body: string): number | null {
+  try {
+    const details = JSON.parse(body)?.error?.details as { '@type': string; retryDelay?: string }[] | undefined
+    const info = details?.find((d) => d['@type']?.endsWith('RetryInfo'))
+    const match = info?.retryDelay?.match(/^([\d.]+)s$/)
+    return match ? parseFloat(match[1]) : null
+  } catch {
+    return null
   }
-  const data = await res.json()
-  return data.embedding.values
+}
+
+export async function embedText(text: string): Promise<number[]> {
+  let lastError = ''
+  for (let attempt = 1; attempt <= EMBED_MAX_ATTEMPTS; attempt++) {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${EMBED_MODEL}:embedContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: `models/${EMBED_MODEL}`,
+          content: { parts: [{ text }] },
+          outputDimensionality: EMBED_DIMENSIONS,
+        }),
+      }
+    )
+    if (res.ok) {
+      const data = await res.json()
+      return data.embedding.values
+    }
+    const body = await res.text()
+    lastError = `Gemini embedContent failed: ${res.status} ${body}`
+    if (res.status !== 429 || attempt === EMBED_MAX_ATTEMPTS) break
+    const delaySec = parseRetryDelaySeconds(body) ?? attempt
+    await new Promise((r) => setTimeout(r, delaySec * 1000))
+  }
+  throw new Error(lastError)
 }
 
 // Verdict generation is provider-agnostic (prompt in, JSON text out), so any

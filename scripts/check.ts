@@ -2,7 +2,7 @@
 // Run: npm run check   (does NOT need network or DB — pure logic only)
 import assert from 'node:assert'
 import { generateKey, hashKey, clientIp } from '../lib/keys'
-import { resolveProvider } from '../lib/llm'
+import { resolveProvider, parseRetryDelaySeconds } from '../lib/llm'
 import { DOMAINS, DEFAULT_DOMAIN, isDomain } from '../lib/domains'
 
 // ── Key hashing: raw never equals stored, hash is stable, prefix matches ──
@@ -89,6 +89,16 @@ import { DOMAINS, DEFAULT_DOMAIN, isDomain } from '../lib/domains'
   const longSentence = 'x'.repeat(150) + '.'
   assert.ok(chunk(longSentence, 60).every((c) => c.length <= 60), 'oversized single sentence still gets hard-sliced')
   assert.strictEqual(chunk('One. Two.', 100).join(' '), 'One. Two.', 'no content lost across chunks')
+}
+
+// ── parseRetryDelaySeconds: extracts Gemini's RetryInfo.retryDelay from a 429 body ──
+{
+  const body429 = JSON.stringify({
+    error: { code: 429, details: [{ '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '12.858886587s' }] },
+  })
+  assert.strictEqual(parseRetryDelaySeconds(body429), 12.858886587, 'extracts fractional-second delay')
+  assert.strictEqual(parseRetryDelaySeconds('{"error":{"details":[]}}'), null, 'no RetryInfo -> null')
+  assert.strictEqual(parseRetryDelaySeconds('not json'), null, 'malformed body -> null, never throws')
 }
 
 // ── resolveProvider: priority order, explicit pin, and missing-key errors ──
