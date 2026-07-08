@@ -4,7 +4,7 @@ import { runPipeline } from '@/lib/pipeline'
 import { getDb } from '@/lib/db'
 import { getRedis, GLOBAL_COUNTER_KEY } from '@/lib/redis'
 import { hashKey, clientIp } from '@/lib/keys'
-import { DOMAINS, DEFAULT_DOMAIN, isDomain } from '@/lib/domains'
+import { DOMAINS, DEFAULT_DOMAIN, isDomain, DISCLAIMER } from '@/lib/domains'
 
 export const runtime = 'nodejs'        // pipeline uses node crypto + supabase-js
 export const maxDuration = 60          // Vercel Pro allows 60s; Hobby caps at 10s
@@ -118,6 +118,7 @@ export async function POST(req: NextRequest) {
         claims: result.claims,
         truncated: result.truncated,
         remaining: limit.remaining,
+        disclaimer: DISCLAIMER,
       },
       { headers: rlHeaders }
     )

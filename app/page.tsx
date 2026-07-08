@@ -10,7 +10,7 @@ type ClaimResult = {
   confidence: string
   reference: { source_name: string; source_url: string | null; relevant_excerpt: string | null } | null
 }
-type ApiResult = { overall_score: number | null; claims: ClaimResult[]; truncated: boolean; error?: string }
+type ApiResult = { overall_score: number | null; claims: ClaimResult[]; truncated: boolean; disclaimer?: string; error?: string }
 
 const VERDICT_COLOR: Record<string, string> = {
   SUPPORTED: 'var(--support)',
@@ -146,6 +146,9 @@ export default function Landing() {
 
             {result && (
               <div className="mt-8 space-y-6">
+                <p className="text-xs opacity-60 rounded-lg border px-3 py-2" style={{ borderColor: 'var(--line)' }}>
+                  AI-generated and informational only — not legal, financial, or compliance advice. Verify independently.
+                </p>
                 {result.overall_score !== null && (
                   <OverallSeal score={result.overall_score} />
                 )}
@@ -179,8 +182,10 @@ export default function Landing() {
         </div>
       </section>
 
-      <footer className="px-6 md:px-10 py-10 border-t text-sm opacity-50" style={{ borderColor: 'var(--line)' }}>
-        TruthLens — verdicts are model-assisted and informational, not legal advice.
+      <footer className="px-6 md:px-10 py-10 border-t text-sm opacity-50 flex flex-wrap items-center gap-x-4 gap-y-2" style={{ borderColor: 'var(--line)' }}>
+        <span>TruthLens — verdicts are AI-generated and informational only, not legal, financial, or compliance advice.</span>
+        <a href="/privacy" className="underline underline-offset-4 hover:opacity-100">Privacy</a>
+        <a href="/terms" className="underline underline-offset-4 hover:opacity-100">Terms</a>
       </footer>
     </main>
   )
