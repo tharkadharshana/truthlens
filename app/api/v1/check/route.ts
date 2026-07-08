@@ -4,6 +4,7 @@ import { runPipeline } from '@/lib/pipeline'
 import { getDb } from '@/lib/db'
 import { getRedis, GLOBAL_COUNTER_KEY } from '@/lib/redis'
 import { hashKey, clientIp } from '@/lib/keys'
+import { DOMAINS, DEFAULT_DOMAIN, isDomain } from '@/lib/domains'
 
 export const runtime = 'nodejs'        // pipeline uses node crypto + supabase-js
 export const maxDuration = 60          // Vercel Pro allows 60s; Hobby caps at 10s
@@ -86,10 +87,17 @@ export async function POST(req: NextRequest) {
   if (text.length > 5000) {
     return NextResponse.json({ error: 'text exceeds 5000 character limit' }, { status: 400, headers: rlHeaders })
   }
+  const domain = body.domain ?? DEFAULT_DOMAIN
+  if (!isDomain(domain)) {
+    return NextResponse.json(
+      { error: `domain must be one of: ${Object.keys(DOMAINS).join(', ')}` },
+      { status: 400, headers: rlHeaders }
+    )
+  }
 
   // ── Run pipeline ───────────────────────────────────────────────────
   try {
-    const result = await runPipeline(text)
+    const result = await runPipeline(text, domain)
 
     await getRedis().incr(GLOBAL_COUNTER_KEY)
     if (keyRow) {
