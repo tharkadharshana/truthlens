@@ -98,6 +98,13 @@ async function ingestStatutes() {
     { name: 'FCRA (15 USC 1681)', url: 'https://www.law.cornell.edu/uscode/text/15/1681' },
     { name: 'Copyright fair use (17 USC 107)', url: 'https://www.law.cornell.edu/uscode/text/17/107' },
     { name: 'Sherman Act (15 USC 1)', url: 'https://www.law.cornell.edu/uscode/text/15/1' },
+    { name: 'FDCPA (15 USC 1692)', url: 'https://www.law.cornell.edu/uscode/text/15/1692' },
+    { name: 'TCPA (47 USC 227)', url: 'https://www.law.cornell.edu/uscode/text/47/227' },
+    { name: 'Title VII employment discrimination (42 USC 2000e-2)', url: 'https://www.law.cornell.edu/uscode/text/42/2000e-2' },
+    { name: 'COPPA (15 USC 6501)', url: 'https://www.law.cornell.edu/uscode/text/15/6501' },
+    { name: 'TILA (15 USC 1601)', url: 'https://www.law.cornell.edu/uscode/text/15/1601' },
+    { name: 'CAN-SPAM Act (15 USC 7704)', url: 'https://www.law.cornell.edu/uscode/text/15/7704' },
+    { name: 'HIPAA wrongful disclosure (42 USC 1320d-6)', url: 'https://www.law.cornell.edu/uscode/text/42/1320d-6' },
   ])
 }
 
@@ -127,11 +134,26 @@ async function ingestFinra() {
   // as the finra_compliance domain proves out.
   await ingestPages('finra_compliance', [
     { name: 'SEC Marketing Rule (17 CFR 275.206(4)-1)', url: 'https://www.law.cornell.edu/cfr/text/17/275.206(4)-1' },
+    { name: 'SEC Rule 10b-5 securities fraud (17 CFR 240.10b-5)', url: 'https://www.law.cornell.edu/cfr/text/17/240.10b-5' },
+    { name: 'Pooled investment vehicle anti-fraud (17 CFR 275.206(4)-8)', url: 'https://www.law.cornell.edu/cfr/text/17/275.206(4)-8' },
+    { name: 'Investment adviser recordkeeping (17 CFR 275.204-2)', url: 'https://www.law.cornell.edu/cfr/text/17/275.204-2' },
+    { name: 'Investment adviser compliance procedures (17 CFR 275.206(4)-7)', url: 'https://www.law.cornell.edu/cfr/text/17/275.206(4)-7' },
+    { name: 'Insider trading affirmative defense (17 CFR 240.10b5-1)', url: 'https://www.law.cornell.edu/cfr/text/17/240.10b5-1' },
+    { name: 'Investment adviser code of ethics (17 CFR 275.204A-1)', url: 'https://www.law.cornell.edu/cfr/text/17/275.204A-1' },
   ])
+}
+
+// Not part of 'all' — deliberately requires the explicit target so a cron
+// run (GitHub Action calls `ingest -- all`) can never wipe the corpus.
+async function clearCorpus() {
+  const { error } = await db.from('corpus_chunks').delete().not('id', 'is', null)
+  if (error) throw new Error('clear failed: ' + error.message)
+  console.log('corpus_chunks cleared')
 }
 
 async function main() {
   const target = process.argv[2] ?? 'all'
+  if (target === 'clear') return clearCorpus()
   if (target === 'statutes' || target === 'all') await ingestStatutes()
   if (target === 'caselaw' || target === 'all') await ingestCaselaw(3)
   if (target === 'finra' || target === 'all') await ingestFinra()
