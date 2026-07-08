@@ -2,6 +2,8 @@
 // Run: npm run check   (does NOT need network or DB — pure logic only)
 import assert from 'node:assert'
 import { generateKey, hashKey, clientIp } from '../lib/keys'
+import { resolveProvider } from '../lib/llm'
+import { DOMAINS, DEFAULT_DOMAIN, isDomain } from '../lib/domains'
 
 // ── Key hashing: raw never equals stored, hash is stable, prefix matches ──
 {
@@ -32,19 +34,63 @@ import { generateKey, hashKey, clientIp } from '../lib/keys'
 // ── safeParseVerdict behavior is covered implicitly; re-implement the guard's
 //    contract here to catch regressions in the parsing rules. ──
 {
-  function parse(raw: string) {
+  function parse(raw: string, verdicts: readonly string[]) {
     const cleaned = raw.replace(/```json|```/g, '').trim()
     const s = cleaned.indexOf('{'), e = cleaned.lastIndexOf('}')
     if (s === -1 || e === -1) return null
     try {
       const p = JSON.parse(cleaned.slice(s, e + 1))
-      return ['SUPPORTED', 'ALTERED', 'UNSUPPORTED', 'NOT_FOUND'].includes(p.verdict) ? p : null
+      return verdicts.includes(p.verdict) ? p : null
     } catch { return null }
   }
-  assert.ok(parse('```json\n{"verdict":"ALTERED"}\n```'), 'strips fences + parses')
-  assert.ok(parse('Sure! {"verdict":"SUPPORTED"} hope that helps') , 'extracts embedded object')
-  assert.strictEqual(parse('no json here'), null, 'rejects prose')
-  assert.strictEqual(parse('{"verdict":"MAYBE"}'), null, 'rejects invalid verdict')
+  const legalVerdicts = DOMAINS.legal_statute.verdicts
+  assert.ok(parse('```json\n{"verdict":"ALTERED"}\n```', legalVerdicts), 'strips fences + parses')
+  assert.ok(parse('Sure! {"verdict":"SUPPORTED"} hope that helps', legalVerdicts), 'extracts embedded object')
+  assert.strictEqual(parse('no json here', legalVerdicts), null, 'rejects prose')
+  assert.strictEqual(parse('{"verdict":"MAYBE"}', legalVerdicts), null, 'rejects invalid verdict')
+  // A domain's own verdict set accepts its verdicts, rejects another domain's
+  assert.ok(parse('{"verdict":"COMPLIANT"}', DOMAINS.finra_compliance.verdicts), 'finra verdict accepted in finra domain')
+  assert.strictEqual(parse('{"verdict":"COMPLIANT"}', legalVerdicts), null, 'finra verdict rejected in legal domain')
+}
+
+// ── domains config: lookup validity, defaults, every domain has NOT_FOUND-style fallback ──
+{
+  assert.ok(isDomain('legal_statute'), 'legal_statute is a valid domain')
+  assert.ok(isDomain('finra_compliance'), 'finra_compliance is a valid domain')
+  assert.ok(!isDomain('made_up_domain'), 'unknown string is not a valid domain')
+  assert.ok(!isDomain(undefined), 'undefined is not a valid domain')
+  assert.ok(DOMAINS[DEFAULT_DOMAIN], 'DEFAULT_DOMAIN resolves to a real config')
+  for (const [key, config] of Object.entries(DOMAINS)) {
+    assert.ok(config.verdicts.includes(config.notFoundVerdict), `${key}.notFoundVerdict must be one of its own verdicts`)
+  }
+}
+
+// ── resolveProvider: priority order, explicit pin, and missing-key errors ──
+{
+  const KEYS = ['DEEPSEEK_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'LLM_PROVIDER'] as const
+  const saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]))
+  const reset = () => KEYS.forEach((k) => delete process.env[k])
+
+  reset()
+  process.env.GEMINI_API_KEY = 'g'
+  process.env.OPENAI_API_KEY = 'o'
+  assert.strictEqual(resolveProvider(), 'openai', 'openai beats gemini when deepseek unset')
+
+  process.env.DEEPSEEK_API_KEY = 'd'
+  assert.strictEqual(resolveProvider(), 'deepseek', 'deepseek wins priority when all three set')
+
+  process.env.LLM_PROVIDER = 'gemini'
+  assert.strictEqual(resolveProvider(), 'gemini', 'LLM_PROVIDER pin overrides priority order')
+
+  process.env.LLM_PROVIDER = 'openai'
+  delete process.env.OPENAI_API_KEY
+  assert.throws(() => resolveProvider(), /API key is not set/, 'pinning to an unconfigured provider throws')
+
+  reset()
+  assert.throws(() => resolveProvider(), /No LLM API key configured/, 'no keys at all throws')
+
+  reset()
+  Object.entries(saved).forEach(([k, v]) => { if (v !== undefined) process.env[k] = v })
 }
 
 console.log('✓ all self-checks passed')
