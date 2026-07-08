@@ -3,6 +3,7 @@
 import assert from 'node:assert'
 import { generateKey, hashKey, clientIp } from '../lib/keys'
 import { resolveProvider, parseRetryDelaySeconds, isRetryableStatus } from '../lib/llm'
+import { verifyTurnstileToken } from '../lib/turnstile'
 import { DOMAINS, DEFAULT_DOMAIN, isDomain } from '../lib/domains'
 
 // ── Key hashing: raw never equals stored, hash is stable, prefix matches ──
@@ -138,4 +139,20 @@ import { DOMAINS, DEFAULT_DOMAIN, isDomain } from '../lib/domains'
   Object.entries(saved).forEach(([k, v]) => { if (v !== undefined) process.env[k] = v })
 }
 
-console.log('✓ all self-checks passed')
+// ── verifyTurnstileToken: inert when unconfigured, requires a token once secret is set ──
+async function checkTurnstile() {
+  const saved = process.env.TURNSTILE_SECRET_KEY
+  delete process.env.TURNSTILE_SECRET_KEY
+  assert.strictEqual(await verifyTurnstileToken(undefined, '1.2.3.4'), true, 'no secret configured -> always passes')
+  assert.strictEqual(await verifyTurnstileToken('some-token', '1.2.3.4'), true, 'no secret configured -> passes even with a token')
+
+  process.env.TURNSTILE_SECRET_KEY = 'test-secret'
+  assert.strictEqual(await verifyTurnstileToken(undefined, '1.2.3.4'), false, 'secret configured, no token -> fails without a network call')
+
+  if (saved !== undefined) process.env.TURNSTILE_SECRET_KEY = saved
+  else delete process.env.TURNSTILE_SECRET_KEY
+}
+
+checkTurnstile()
+  .then(() => console.log('✓ all self-checks passed'))
+  .catch((e) => { console.error(e); process.exit(1) })

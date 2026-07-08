@@ -1,5 +1,12 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
+import Script from 'next/script'
+
+const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY
+
+declare global {
+  interface Window { onTurnstileSuccess?: (token: string) => void }
+}
 
 type ClaimResult = {
   claim: string
@@ -29,6 +36,7 @@ export default function Landing() {
   const [loading, setLoading] = useState(false)
   const [quota, setQuota] = useState<{ remaining: number; limit: number; reset: number } | null>(null)
   const [err, setErr] = useState('')
+  const [turnstileToken, setTurnstileToken] = useState('')
 
   const loadStats = useCallback(() => {
     fetch('/api/stats').then((r) => r.json()).then((d) => setTotal(d.total_requests)).catch(() => {})
@@ -40,13 +48,18 @@ export default function Landing() {
     return () => clearInterval(iv)
   }, [loadStats])
 
+  useEffect(() => {
+    window.onTurnstileSuccess = (token: string) => setTurnstileToken(token)
+    return () => { delete window.onTurnstileSuccess }
+  }, [])
+
   async function run() {
     setLoading(true); setErr(''); setResult(null)
     try {
       const res = await fetch('/api/v1/check', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, turnstileToken: turnstileToken || undefined }),
       })
       setQuota({
         remaining: Number(res.headers.get('X-RateLimit-Remaining') ?? 0),
@@ -65,6 +78,9 @@ export default function Landing() {
 
   return (
     <main className="min-h-screen">
+      {TURNSTILE_SITE_KEY && (
+        <Script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer />
+      )}
       {/* Top bar */}
       <nav className="flex items-center justify-between px-6 md:px-10 py-5 border-b" style={{ borderColor: 'var(--line)' }}>
         <span style={{ fontFamily: 'var(--font-display)' }} className="text-xl font-semibold tracking-tight">
@@ -130,11 +146,15 @@ export default function Landing() {
               className="w-full bg-transparent resize-none text-lg leading-relaxed placeholder:opacity-40 focus:outline-none"
               style={{ fontFamily: 'var(--font-display)' }}
             />
+            {TURNSTILE_SITE_KEY && (
+              <div className="cf-turnstile mt-4" data-sitekey={TURNSTILE_SITE_KEY} data-callback="onTurnstileSuccess" />
+            )}
+
             <div className="flex items-center justify-between mt-4">
               <span className="text-xs opacity-40 ledger">{text.length}/5000</span>
               <button
                 onClick={run}
-                disabled={loading || text.trim().length < 10}
+                disabled={loading || text.trim().length < 10 || (!!TURNSTILE_SITE_KEY && !turnstileToken)}
                 className="px-5 py-2.5 rounded-lg font-medium text-[var(--ink)] disabled:opacity-30 transition"
                 style={{ background: 'var(--verdict)' }}
               >
