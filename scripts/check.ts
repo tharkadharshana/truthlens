@@ -2,7 +2,7 @@
 // Run: npm run check   (does NOT need network or DB — pure logic only)
 import assert from 'node:assert'
 import { generateKey, hashKey, clientIp } from '../lib/keys'
-import { resolveProvider, parseRetryDelaySeconds } from '../lib/llm'
+import { resolveProvider, parseRetryDelaySeconds, isRetryableStatus } from '../lib/llm'
 import { DOMAINS, DEFAULT_DOMAIN, isDomain } from '../lib/domains'
 
 // ── Key hashing: raw never equals stored, hash is stable, prefix matches ──
@@ -89,6 +89,15 @@ import { DOMAINS, DEFAULT_DOMAIN, isDomain } from '../lib/domains'
   const longSentence = 'x'.repeat(150) + '.'
   assert.ok(chunk(longSentence, 60).every((c) => c.length <= 60), 'oversized single sentence still gets hard-sliced')
   assert.strictEqual(chunk('One. Two.', 100).join(' '), 'One. Two.', 'no content lost across chunks')
+}
+
+// ── isRetryableStatus: 429/503 retry, everything else doesn't ──
+{
+  assert.ok(isRetryableStatus(429), '429 is retryable')
+  assert.ok(isRetryableStatus(503), '503 is retryable')
+  assert.ok(!isRetryableStatus(400), '400 is not retryable')
+  assert.ok(!isRetryableStatus(401), '401 is not retryable')
+  assert.ok(!isRetryableStatus(500), '500 is not retryable')
 }
 
 // ── parseRetryDelaySeconds: extracts Gemini's RetryInfo.retryDelay from a 429 body ──

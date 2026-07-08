@@ -19,6 +19,13 @@ const EMBED_DIMENSIONS = 768
 // migration strategy, not just a retry loop — separate decision.
 const EMBED_MAX_ATTEMPTS = 3
 
+// 429 (quota) and 503 (transient overload) are worth retrying; anything
+// else (4xx auth/bad-request) won't succeed on retry. Extracted + tested
+// because a 429-only version of this already caused one real ingest failure.
+export function isRetryableStatus(status: number): boolean {
+  return status === 429 || status === 503
+}
+
 export function parseRetryDelaySeconds(body: string): number | null {
   try {
     const details = JSON.parse(body)?.error?.details as { '@type': string; retryDelay?: string }[] | undefined
@@ -51,7 +58,7 @@ export async function embedText(text: string): Promise<number[]> {
     }
     const body = await res.text()
     lastError = `Gemini embedContent failed: ${res.status} ${body}`
-    if (res.status !== 429 || attempt === EMBED_MAX_ATTEMPTS) break
+    if (!isRetryableStatus(res.status) || attempt === EMBED_MAX_ATTEMPTS) break
     const delaySec = parseRetryDelaySeconds(body) ?? attempt
     await new Promise((r) => setTimeout(r, delaySec * 1000))
   }
