@@ -57,9 +57,13 @@ create index if not exists corpus_embedding_idx on public.corpus_chunks
 create index if not exists corpus_domain_idx on public.corpus_chunks(domain);
 
 -- ── RLS ─────────────────────────────────────────────────────────────
-alter table public.profiles    enable row level security;
-alter table public.api_keys    enable row level security;
-alter table public.usage_logs  enable row level security;
+alter table public.profiles     enable row level security;
+alter table public.api_keys     enable row level security;
+alter table public.usage_logs   enable row level security;
+-- corpus_chunks: RLS on, no policies — only the service-role client
+-- (lib/db.ts getDb(), which bypasses RLS) ever queries this table; nothing
+-- reads it via the anon key, so deny-all-by-default is correct here.
+alter table public.corpus_chunks enable row level security;
 
 -- profiles: owner read/write
 drop policy if exists "own profile" on public.profiles;
