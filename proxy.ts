@@ -11,9 +11,10 @@ export function proxy(req: NextRequest) {
     .some((c) => c.name.startsWith('sb-') && c.name.includes('-auth-token'))
 
   if (!hasAuthCookie) {
-    return NextResponse.redirect(new URL('/login?next=/dashboard', req.url))
+    const next = req.nextUrl.pathname.startsWith('/admin') ? '/admin' : '/dashboard'
+    return NextResponse.redirect(new URL(`/login?next=${next}`, req.url))
   }
   return NextResponse.next()
 }
 
-export const config = { matcher: ['/dashboard/:path*'] }
+export const config = { matcher: ['/dashboard/:path*', '/admin/:path*'] }
