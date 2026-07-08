@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import * as Sentry from '@sentry/nextjs'
 import { checkLimit } from '@/lib/ratelimit'
 import { runPipeline } from '@/lib/pipeline'
 import { getDb } from '@/lib/db'
@@ -34,6 +35,7 @@ async function logUsage(params: {
     })
   } catch (e) {
     console.error('usage log failed', e)
+    Sentry.captureException(e)
   }
 }
 
@@ -142,6 +144,7 @@ export async function POST(req: NextRequest) {
     )
   } catch (e) {
     console.error('pipeline error', e)
+    Sentry.captureException(e)
     await logUsage({ api_key_id: keyRow?.id ?? null, identifier, tier, claims: 0, llm_calls: 0, status: 500 })
     return NextResponse.json({ error: 'Verification failed' }, { status: 500, headers: rlHeaders })
   }

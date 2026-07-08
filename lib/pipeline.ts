@@ -1,3 +1,4 @@
+import * as Sentry from '@sentry/nextjs'
 import { getDb } from './db'
 import { generateVerdictText, resolveProvider, embedText } from './llm'
 import { DOMAINS, DEFAULT_DOMAIN, type Domain } from './domains'
@@ -152,6 +153,10 @@ export async function runPipeline(text: string, domain: Domain = DEFAULT_DOMAIN)
         llm_calls++ // verify call
         return { claim, ...verification }
       } catch (e) {
+        // Previously swallowed with no logging at all — a per-claim failure
+        // was invisible until a user reported it. Report, don't just return.
+        console.error('claim verification failed', e)
+        Sentry.captureException(e)
         return {
           claim,
           truth_score: null,
