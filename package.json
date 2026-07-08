@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "ingest": "tsx scripts/ingest.ts",
+    "ingest": "node --env-file=.env.local --import tsx scripts/ingest.ts",
     "check": "tsx scripts/check.ts"
   },
   "dependencies": {
