@@ -65,6 +65,32 @@ import { DOMAINS, DEFAULT_DOMAIN, isDomain } from '../lib/domains'
   }
 }
 
+// ── ingest chunk(): mirrors scripts/ingest.ts's sentence-packing logic
+//    (not imported — importing that file runs its network-hitting main()). ──
+{
+  function chunk(text: string, size = 512): string[] {
+    const sentences = text.split(/(?<=[.!?])\s+/)
+    const out: string[] = []
+    let cur = ''
+    for (const s of sentences) {
+      if (cur && cur.length + 1 + s.length > size) { out.push(cur); cur = '' }
+      if (s.length > size) {
+        if (cur) { out.push(cur); cur = '' }
+        for (let i = 0; i < s.length; i += size) out.push(s.slice(i, i + size))
+        continue
+      }
+      cur = cur ? `${cur} ${s}` : s
+    }
+    if (cur) out.push(cur)
+    return out
+  }
+  assert.deepStrictEqual(chunk('One. Two. Three.', 100), ['One. Two. Three.'], 'short text stays one chunk')
+  assert.ok(chunk('a'.repeat(50) + '. ' + 'b'.repeat(50) + '.', 60).every((c) => c.length <= 60), 'no chunk exceeds size')
+  const longSentence = 'x'.repeat(150) + '.'
+  assert.ok(chunk(longSentence, 60).every((c) => c.length <= 60), 'oversized single sentence still gets hard-sliced')
+  assert.strictEqual(chunk('One. Two.', 100).join(' '), 'One. Two.', 'no content lost across chunks')
+}
+
 // ── resolveProvider: priority order, explicit pin, and missing-key errors ──
 {
   const KEYS = ['DEEPSEEK_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'LLM_PROVIDER'] as const

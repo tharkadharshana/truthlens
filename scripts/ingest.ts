@@ -8,11 +8,28 @@ import type { Domain } from '../lib/domains'
 
 const db = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
 
-// ponytail: fixed-window char chunking, 512/64. Ceiling: splits mid-sentence,
-// dilutes embeddings. Upgrade: sentence-aware chunking if recall is poor.
-function chunk(text: string, size = 512, overlap = 64): string[] {
+// Packs whole sentences into ~size-char chunks (no mid-sentence splits).
+// A single sentence longer than size is hard-sliced on its own — rare, but
+// statute text sometimes runs a numbered subsection with no terminal period.
+// ponytail: no overlap between chunks (fixed-window's overlap masked splits
+// this avoids). Upgrade: carry last sentence into next chunk if recall suffers.
+function chunk(text: string, size = 512): string[] {
+  const sentences = text.split(/(?<=[.!?])\s+/)
   const out: string[] = []
-  for (let i = 0; i < text.length; i += size - overlap) out.push(text.slice(i, i + size))
+  let cur = ''
+  for (const s of sentences) {
+    if (cur && cur.length + 1 + s.length > size) {
+      out.push(cur)
+      cur = ''
+    }
+    if (s.length > size) {
+      if (cur) { out.push(cur); cur = '' }
+      for (let i = 0; i < s.length; i += size) out.push(s.slice(i, i + size))
+      continue
+    }
+    cur = cur ? `${cur} ${s}` : s
+  }
+  if (cur) out.push(cur)
   return out
 }
 
