@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import * as Sentry from '@sentry/nextjs'
 import { getDb } from '@/lib/db'
 import { getAuthedUser } from '@/lib/auth'
 import { generateKey } from '@/lib/keys'
@@ -44,6 +45,7 @@ export async function POST() {
 
   if (error) {
     console.error('key insert failed', error)
+    Sentry.captureException(error)
     return NextResponse.json({ error: 'Failed to create key' }, { status: 500 })
   }
 

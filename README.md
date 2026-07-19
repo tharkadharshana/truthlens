@@ -14,7 +14,7 @@ app/
   api/usage/route.ts        monthly billing rollup
   api/stats/route.ts        global counter
   api/auth/route.ts         OAuth code exchange
-lib/                        db, redis, ratelimit, pipeline, keys, auth (all lazy-init)
+lib/                        db, redis, ratelimit, pipeline, llm, keys, auth (all lazy-init)
 proxy.ts                    optimistic cookie gate for /dashboard (Next 16 convention)
 scripts/ingest.ts           corpus builder (run locally / via GitHub Actions)
 scripts/check.ts            logic self-check — `npm run check`
@@ -31,7 +31,7 @@ schema.sql                  full DB schema + RPCs
 
 ## Deploy (≈10 min)
 
-You need free accounts: Supabase, Upstash, Google AI Studio, Vercel.
+You need free accounts: Supabase, Upstash, Google AI Studio, Vercel. Optionally OpenAI and/or DeepSeek if you want a different verify-step model (see step 3).
 
 ### 1. Supabase
 - New project → SQL Editor → paste all of `schema.sql` → Run.
@@ -63,15 +63,23 @@ ANALYZE public.corpus_chunks;
 ```bash
 npm i -g vercel
 vercel            # link / create project
-# add the 6 env vars (Project Settings → Environment Variables):
+# add the env vars (Project Settings → Environment Variables):
 #   NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY,
 #   SUPABASE_SERVICE_ROLE_KEY, UPSTASH_REDIS_REST_URL,
-#   UPSTASH_REDIS_REST_TOKEN, GEMINI_API_KEY
+#   UPSTASH_REDIS_REST_TOKEN, GEMINI_API_KEY (required)
+#   DEEPSEEK_API_KEY, OPENAI_API_KEY, LLM_PROVIDER (optional — see below)
 vercel --prod
 ```
 
 ### 6. Monthly corpus refresh (optional)
 Add the same secrets to your GitHub repo (Settings → Secrets → Actions). `.github/workflows/ingest.yml` re-runs ingestion on the 1st of each month.
+
+## LLM providers
+`GEMINI_API_KEY` is always required — corpus embeddings use Gemini's `text-embedding-004` regardless of verify provider, since the pgvector column is a fixed `vector(768)` (re-ingest the corpus if you ever need to change embedders).
+
+The claim-verification step (compare claim vs. retrieved sources, return a verdict) can run on any of Gemini, OpenAI, or DeepSeek. Set any combination of `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY`:
+- With multiple keys set, priority is **DeepSeek → OpenAI → Gemini**.
+- Set `LLM_PROVIDER=deepseek|openai|gemini` to pin one explicitly (errors if that key is missing).
 
 ## Local dev
 ```bash

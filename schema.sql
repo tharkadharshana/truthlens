@@ -40,9 +40,10 @@ create table if not exists public.usage_logs (
 create index if not exists usage_logs_key_time_idx on public.usage_logs(api_key_id, created_at desc);
 create index if not exists usage_logs_id_time_idx on public.usage_logs(identifier, created_at desc);
 
--- ── Legal corpus ────────────────────────────────────────────────────
+-- ── Corpus (multi-domain: legal statutes, FINRA/SEC rules, ...) ──────
 create table if not exists public.corpus_chunks (
   id uuid primary key default gen_random_uuid(),
+  domain text not null default 'legal_statute',  -- see lib/domains.ts DomainConfig keys
   source_name text not null,
   source_url text,
   content text not null,
@@ -53,11 +54,16 @@ create table if not exists public.corpus_chunks (
 );
 create index if not exists corpus_embedding_idx on public.corpus_chunks
   using ivfflat (embedding vector_cosine_ops) with (lists = 100);
+create index if not exists corpus_domain_idx on public.corpus_chunks(domain);
 
 -- ── RLS ─────────────────────────────────────────────────────────────
-alter table public.profiles    enable row level security;
-alter table public.api_keys    enable row level security;
-alter table public.usage_logs  enable row level security;
+alter table public.profiles     enable row level security;
+alter table public.api_keys     enable row level security;
+alter table public.usage_logs   enable row level security;
+-- corpus_chunks: RLS on, no policies — only the service-role client
+-- (lib/db.ts getDb(), which bypasses RLS) ever queries this table; nothing
+-- reads it via the anon key, so deny-all-by-default is correct here.
+alter table public.corpus_chunks enable row level security;
 
 -- profiles: owner read/write
 drop policy if exists "own profile" on public.profiles;
@@ -90,16 +96,18 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.handle_new_user();
 
--- ── Vector search RPC ───────────────────────────────────────────────
+-- ── Vector search RPC (domain-scoped — see lib/domains.ts) ───────────
 create or replace function public.match_corpus(
   query_embedding vector(768),
-  match_count int default 5
+  match_count int default 5,
+  match_domain text default 'legal_statute'
 )
 returns table (content text, source_name text, source_url text, similarity float)
 language sql stable as $$
   select content, source_name, source_url,
          1 - (embedding <=> query_embedding) as similarity
   from public.corpus_chunks
+  where domain = match_domain
   order by embedding <=> query_embedding
   limit match_count;
 $$;

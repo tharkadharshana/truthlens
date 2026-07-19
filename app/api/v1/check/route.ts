@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
+import * as Sentry from '@sentry/nextjs'
 import { checkLimit } from '@/lib/ratelimit'
 import { runPipeline } from '@/lib/pipeline'
 import { getDb } from '@/lib/db'
 import { getRedis, GLOBAL_COUNTER_KEY } from '@/lib/redis'
 import { hashKey, clientIp } from '@/lib/keys'
+import { DOMAINS, DEFAULT_DOMAIN, isDomain, DISCLAIMER } from '@/lib/domains'
+import { verifyTurnstileToken } from '@/lib/turnstile'
 
 export const runtime = 'nodejs'        // pipeline uses node crypto + supabase-js
 export const maxDuration = 60          // Vercel Pro allows 60s; Hobby caps at 10s
@@ -32,6 +35,7 @@ async function logUsage(params: {
     })
   } catch (e) {
     console.error('usage log failed', e)
+    Sentry.captureException(e)
   }
 }
 
@@ -86,10 +90,34 @@ export async function POST(req: NextRequest) {
   if (text.length > 5000) {
     return NextResponse.json({ error: 'text exceeds 5000 character limit' }, { status: 400, headers: rlHeaders })
   }
+  const domain = body.domain ?? DEFAULT_DOMAIN
+  if (!isDomain(domain)) {
+    return NextResponse.json(
+      { error: `domain must be one of: ${Object.keys(DOMAINS).join(', ')}` },
+      { status: 400, headers: rlHeaders }
+    )
+  }
+
+  // ── Turnstile (free tier only — a key already proves you're not an
+  // anonymous browser script). Verifies a token if one was sent; only
+  // *requires* one when TURNSTILE_REQUIRE_FOR_ANONYMOUS=true, since the
+  // public "no key needed" curl-able API would otherwise break for every
+  // non-browser caller. See memory: production-readiness-gaps item 10. ──
+  if (!keyRow) {
+    const token = typeof body.turnstileToken === 'string' ? body.turnstileToken : undefined
+    const required = process.env.TURNSTILE_REQUIRE_FOR_ANONYMOUS === 'true'
+    if (token || required) {
+      const ok = await verifyTurnstileToken(token, identifier)
+      if (!ok) {
+        await logUsage({ api_key_id: null, identifier, tier, claims: 0, llm_calls: 0, status: 403 })
+        return NextResponse.json({ error: 'Turnstile verification failed' }, { status: 403, headers: rlHeaders })
+      }
+    }
+  }
 
   // ── Run pipeline ───────────────────────────────────────────────────
   try {
-    const result = await runPipeline(text)
+    const result = await runPipeline(text, domain)
 
     await getRedis().incr(GLOBAL_COUNTER_KEY)
     if (keyRow) {
@@ -110,11 +138,13 @@ export async function POST(req: NextRequest) {
         claims: result.claims,
         truncated: result.truncated,
         remaining: limit.remaining,
+        disclaimer: DISCLAIMER,
       },
       { headers: rlHeaders }
     )
   } catch (e) {
     console.error('pipeline error', e)
+    Sentry.captureException(e)
     await logUsage({ api_key_id: keyRow?.id ?? null, identifier, tier, claims: 0, llm_calls: 0, status: 500 })
     return NextResponse.json({ error: 'Verification failed' }, { status: 500, headers: rlHeaders })
   }

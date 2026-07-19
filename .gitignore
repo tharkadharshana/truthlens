@@ -5,3 +5,9 @@ node_modules
 .DS_Store
 *.tsbuildinfo
 next-env.d.ts
+
+.vercel
+.env*
+.devserver.log
+
+.env*
