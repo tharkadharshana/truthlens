@@ -8,30 +8,60 @@ declare global {
   interface Window { onTurnstileSuccess?: (token: string) => void }
 }
 
+type Evidence = { source_name: string; source_url: string; snippet: string; kind: string }
 type ClaimResult = {
   claim: string
   truth_score: number | null
+  truth_percentage?: number | null
   verdict: string
   what_is_wrong: string | null
   what_is_missing: string | null
   confidence: string
   reference: { source_name: string; source_url: string | null; relevant_excerpt: string | null } | null
+  evidence?: Evidence[]
 }
-type ApiResult = { overall_score: number | null; claims: ClaimResult[]; truncated: boolean; disclaimer?: string; error?: string }
+type ApiResult = {
+  overall_score: number | null
+  claims: ClaimResult[]
+  truncated: boolean
+  disclaimer?: string
+  evidence_level?: string
+  upgrade_hint?: string
+  cached?: boolean
+  error?: string
+}
 
 const VERDICT_COLOR: Record<string, string> = {
+  // corpus domains
   SUPPORTED: 'var(--support)',
   ALTERED: 'var(--alter)',
   UNSUPPORTED: 'var(--alter)',
+  COMPLIANT: 'var(--support)',
+  UNSUBSTANTIATED_CLAIM: 'var(--alter)',
+  PROHIBITED_PROMISE: 'var(--alter)',
+  MISSING_DISCLOSURE: 'var(--alter)',
+  // general domain
+  TRUE: 'var(--support)',
+  MOSTLY_TRUE: 'var(--support)',
+  MISLEADING: 'var(--alter)',
+  FALSE: 'var(--alter)',
+  UNVERIFIABLE: 'var(--absent)',
+  // shared
   NOT_FOUND: 'var(--absent)',
   ERROR: 'var(--absent)',
 }
 
-const EXAMPLE = 'Section 230 gives online platforms complete immunity from every kind of lawsuit, including federal criminal charges.'
+type Mode = { id: string; label: string; placeholder: string; example: string }
+const MODES: Mode[] = [
+  { id: 'general', label: 'General', placeholder: 'Paste any claim, post, or statement in any language…', example: 'Russia is the largest country in the world by land area, and eggs are a type of stone.' },
+  { id: 'legal_statute', label: 'Legal', placeholder: 'Paste a legal claim to verify…', example: 'Section 230 gives online platforms complete immunity from every kind of lawsuit, including federal criminal charges.' },
+  { id: 'finra_compliance', label: 'FINRA', placeholder: 'Paste a financial marketing statement to review…', example: 'Our fund guarantees a 12% annual return with absolutely no risk of loss.' },
+]
 
 export default function Landing() {
   const [total, setTotal] = useState<number | null>(null)
   const [text, setText] = useState('')
+  const [mode, setMode] = useState<Mode>(MODES[0])
   const [result, setResult] = useState<ApiResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [quota, setQuota] = useState<{ remaining: number; limit: number; reset: number } | null>(null)
@@ -59,7 +89,7 @@ export default function Landing() {
       const res = await fetch('/api/v1/check', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, turnstileToken: turnstileToken || undefined }),
+        body: JSON.stringify({ text, domain: mode.id, turnstileToken: turnstileToken || undefined }),
       })
       setQuota({
         remaining: Number(res.headers.get('X-RateLimit-Remaining') ?? 0),
@@ -98,15 +128,16 @@ export default function Landing() {
       {/* Hero */}
       <section className="px-6 md:px-10 pt-16 md:pt-24 pb-12 max-w-5xl mx-auto">
         <p className="text-sm uppercase tracking-[0.2em] mb-5" style={{ color: 'var(--verdict)' }}>
-          Legal claim verification
+          Fact-checking with receipts
         </p>
         <h1 style={{ fontFamily: 'var(--font-display)' }} className="text-4xl md:text-6xl leading-[1.05] font-medium max-w-3xl">
-          Every legal claim deserves a{' '}
+          Paste anything. Get a{' '}
           <span className="italic" style={{ color: 'var(--verdict)' }}>verdict</span>, not a guess.
         </h1>
         <p className="mt-6 text-lg opacity-75 max-w-2xl leading-relaxed">
-          Send a statement. Get a structured verdict scored against real statutes and case law —
-          with the exact citation, what was altered, and what was left out. No invented sources.
+          Any claim, any language — checked live against Wikipedia, professional fact-checkers, and the
+          web. Every verdict comes with a trust score and the real sources behind it. No invented citations.
+          Specialized Legal and FINRA-compliance modes for professionals.
         </p>
 
         {/* Dual counters */}
@@ -128,9 +159,22 @@ export default function Landing() {
       {/* Live demo */}
       <section className="px-6 md:px-10 pb-20 max-w-5xl mx-auto">
         <div className="rounded-2xl border overflow-hidden" style={{ borderColor: 'var(--line)', background: 'var(--paper)' }}>
-          <div className="px-6 py-4 border-b flex items-center justify-between" style={{ borderColor: 'var(--line)' }}>
-            <span className="text-sm opacity-60" style={{ fontFamily: 'var(--font-mono)' }}>POST /api/v1/check</span>
-            <button onClick={() => setText(EXAMPLE)} className="text-xs opacity-60 hover:opacity-100 transition underline underline-offset-4">
+          <div className="px-6 py-4 border-b flex items-center justify-between gap-4 flex-wrap" style={{ borderColor: 'var(--line)' }}>
+            <div className="flex items-center gap-1 rounded-lg p-1" style={{ background: 'var(--ink)' }}>
+              {MODES.map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => { setMode(m); setResult(null); setErr('') }}
+                  className="text-xs px-3 py-1.5 rounded-md transition"
+                  style={mode.id === m.id
+                    ? { background: 'var(--verdict)', color: 'var(--ink)', fontWeight: 500 }
+                    : { opacity: 0.6 }}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            <button onClick={() => setText(mode.example)} className="text-xs opacity-60 hover:opacity-100 transition underline underline-offset-4">
               try an example
             </button>
           </div>
@@ -141,8 +185,8 @@ export default function Landing() {
               onChange={(e) => setText(e.target.value)}
               rows={3}
               maxLength={5000}
-              placeholder="Paste a legal claim to verify…"
-              aria-label="Legal claim to verify"
+              placeholder={mode.placeholder}
+              aria-label={`${mode.label} claim to verify`}
               className="w-full bg-transparent resize-none text-lg leading-relaxed placeholder:opacity-40 focus:outline-none"
               style={{ fontFamily: 'var(--font-display)' }}
             />
@@ -168,7 +212,15 @@ export default function Landing() {
               <div className="mt-8 space-y-6">
                 <p className="text-xs opacity-60 rounded-lg border px-3 py-2" style={{ borderColor: 'var(--line)' }}>
                   AI-generated and informational only — not legal, financial, or compliance advice. Verify independently.
+                  {result.cached && <span className="ml-1 opacity-70">· served from cache</span>}
                 </p>
+                {result.evidence_level === 'limited' && (
+                  <a href="/login" className="block text-sm rounded-lg border px-4 py-3 transition hover:opacity-90"
+                     style={{ borderColor: 'var(--verdict-dim)' }}>
+                    <span style={{ color: 'var(--verdict)' }}>Limited free check.</span>{' '}
+                    {result.upgrade_hint || 'Get an API key for full web verification.'} →
+                  </a>
+                )}
                 {result.overall_score !== null && (
                   <OverallSeal score={result.overall_score} />
                 )}
@@ -189,7 +241,8 @@ export default function Landing() {
 {`curl -X POST https://YOUR_DOMAIN/api/v1/check \\
   -H "Content-Type: application/json" \\
   -H "x-api-key: tl_••••"        # omit for the free tier \\
-  -d '{"text": "Section 230 gives platforms total immunity."}'`}
+  -d '{"text": "Russia is the largest country in the world.",
+       "domain": "general"}'   # general | legal_statute | finra_compliance`}
         </pre>
       </section>
 
@@ -197,8 +250,8 @@ export default function Landing() {
       <section id="pricing" className="px-6 md:px-10 py-16 border-t max-w-5xl mx-auto" style={{ borderColor: 'var(--line)' }}>
         <h2 style={{ fontFamily: 'var(--font-display)' }} className="text-3xl font-medium mb-8">Pricing</h2>
         <div className="grid md:grid-cols-2 gap-5">
-          <Tier name="Free" price="$0" lines={['10 requests / hour', 'No key, no sign-up', 'Full structured verdicts', 'Real citations']} cta="Use it above" href="#api" muted />
-          <Tier name="Pro" price="Free in beta" lines={['1,000 requests / hour', 'API key + usage dashboard', 'Per-month billing logs', 'Priority pipeline']} cta="Get a key" href="/login" />
+          <Tier name="Free" price="$0" lines={['5 general checks / hour', 'No key, no sign-up', 'Wikipedia + fact-check sources', 'Full structured verdicts']} cta="Use it above" href="#api" muted />
+          <Tier name="Pro" price="Free in beta" lines={['1,000 requests / hour', 'Full web + news evidence', 'All domains: general, legal, FINRA', 'API key, dashboard & history']} cta="Get a key" href="/login" />
         </div>
       </section>
 
@@ -258,6 +311,22 @@ function ClaimCard({ c }: { c: ClaimResult }) {
            className="inline-block mt-2 text-sm underline underline-offset-4" style={{ color: 'var(--verdict)' }}>
           {c.reference.source_name || 'Source'} ↗
         </a>
+      )}
+      {c.evidence && c.evidence.length > 0 && (
+        <div className="mt-4 pt-3 border-t" style={{ borderColor: 'var(--line)' }}>
+          <p className="text-xs uppercase tracking-wider opacity-40 mb-2">Sources checked</p>
+          <ul className="space-y-1.5">
+            {c.evidence.map((e, i) => (
+              <li key={i} className="text-sm flex items-start gap-2">
+                <span className="text-xs px-1.5 py-0.5 rounded shrink-0 opacity-60" style={{ border: '1px solid var(--line)' }}>{e.kind}</span>
+                <a href={e.source_url} target="_blank" rel="noopener noreferrer"
+                   className="underline underline-offset-4 opacity-80 hover:opacity-100" style={{ color: 'var(--verdict)' }}>
+                  {e.source_name}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
     </div>
   )
