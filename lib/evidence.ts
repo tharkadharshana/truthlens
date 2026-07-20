@@ -137,23 +137,6 @@ async function searchTavily(query: string): Promise<Evidence[]> {
     }))
 }
 
-// Google Custom Search — snippets only. Optional (needs key + cx), paid tier.
-async function searchGoogleCSE(query: string): Promise<Evidence[]> {
-  const key = process.env.GOOGLE_CSE_API_KEY
-  const cx = process.env.GOOGLE_CSE_CX
-  if (!key || !cx) return []
-  const url = `https://www.googleapis.com/customsearch/v1?key=${key}&cx=${cx}&num=5&q=${encodeURIComponent(query)}`
-  const data = await fetchJson(url)
-  return (data?.items ?? [])
-    .filter((it: any) => it.link && it.snippet)
-    .map((it: any): Evidence => ({
-      source_name: it.title || it.displayLink || it.link,
-      source_url: it.link,
-      snippet: stripHtml(String(it.snippet)),
-      kind: 'web',
-    }))
-}
-
 // GNews — current-events coverage. Optional (needs key), paid tier.
 async function searchGNews(query: string): Promise<Evidence[]> {
   const key = process.env.GNEWS_API_KEY
@@ -177,8 +160,8 @@ function cacheKey(query: string, full: boolean): string {
   return `ev:${h}:${full ? 1 : 0}`
 }
 
-// Always: fact-check + Wikipedia (free, both tiers). Full (paid): adds Tavily,
-// CSE, GNews. Redis-cached per (query, tier) to protect quotas.
+// Always: fact-check + Wikipedia (free, both tiers). Full (paid): adds Tavily
+// + GNews. Redis-cached per (query, tier) to protect quotas.
 export async function gatherEvidence(query: string, full: boolean): Promise<Evidence[]> {
   const redis = getRedis()
   const key = cacheKey(query, full)
@@ -188,7 +171,7 @@ export async function gatherEvidence(query: string, full: boolean): Promise<Evid
   } catch { /* cache read failure is non-fatal */ }
 
   const providers = full
-    ? [searchFactCheck(query), searchWikipedia(query), searchTavily(query), searchGoogleCSE(query), searchGNews(query)]
+    ? [searchFactCheck(query), searchWikipedia(query), searchTavily(query), searchGNews(query)]
     : [searchFactCheck(query), searchWikipedia(query)]
 
   const settled = await Promise.allSettled(providers)

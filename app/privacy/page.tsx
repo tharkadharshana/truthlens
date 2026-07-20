@@ -18,7 +18,7 @@ export default function Privacy() {
 
       <Section title="Where it goes">
         <p>Submitted claim text is sent to third-party AI providers to generate a verdict: Google (Gemini, always, for retrieval) and whichever of Google, OpenAI, or DeepSeek is configured for verdict generation. Each provider processes that text under its own terms — we do not control their retention policies.</p>
-        <p>For general fact-checking, your text (or an English translation of it) is also sent as a search query to evidence providers — Wikipedia, Google Fact Check Tools, and, for API-key requests, Tavily, Google Custom Search, and GNews — to retrieve the sources a verdict cites.</p>
+        <p>For general fact-checking, your text (or an English translation of it) is also sent as a search query to evidence providers — Wikipedia, Google Fact Check Tools, and, for API-key requests, Tavily and GNews — to retrieve the sources a verdict cites.</p>
         <p>Account, usage, and check-history data is stored with Supabase (Postgres) and Upstash (Redis), both third-party infrastructure providers.</p>
       </Section>
 
