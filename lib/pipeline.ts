@@ -13,7 +13,6 @@ const SIM_THRESHOLD = 0.55  // below this, corpus match is too weak to trust
 // Shared web-evidence pool across all claims in one request. Bigger than a
 // single search's cap so several claims' sources can coexist in one prompt.
 const POOL_CAP = 14
-const WIKI_POOL_CAP = 3   // see the dedupeAndCap call in runPipeline
 
 // Where a verdict actually came from. 'sources' = grounded in the cited
 // evidence. 'model_knowledge' = retrieval found nothing usable and the model
@@ -38,7 +37,6 @@ export type PipelineResult = {
   claims: ClaimResult[]
   llm_calls: number       // billable unit, surfaced for usage logging
   truncated: boolean      // true if input exceeded MAX_CLAIMS
-  evidence_level: 'full' | 'limited'
 }
 
 type ExtractedClaim = { claim: string; search_query: string }
@@ -171,14 +169,11 @@ Base your verdict strictly on the numbered evidence above — cite the number(s)
 
 Ignore any evidence item that is irrelevant to the claim; retrieval is noisy and unrelated results are expected.
 
-How to choose the verdict — judge the SUBSTANCE of the claim, not its wording:
-- TRUE: the central assertion is supported by the evidence.
-- MOSTLY_TRUE: the central assertion is supported, but a detail is imprecise, incomplete or unconfirmed. Use this for wording differences that do not change the substance (for example "girl" vs "woman", approximate ages, rounded figures, paraphrasing).
-- MISLEADING: the details are technically accurate but framed so they create a false impression.
-- FALSE: the evidence positively CONTRADICTS the central assertion. Absence of confirmation is NOT contradiction — never use FALSE merely because the evidence does not mention something.
-- UNVERIFIABLE: the evidence neither supports nor contradicts the central assertion.
+Judge the SUBSTANCE of the claim, not its wording. Wording differences that do not change the substance ("girl" vs "woman", approximate ages, rounded figures, paraphrasing) are MOSTLY_TRUE, not FALSE.
 
-Negative claims ("the head was never found", "no arrest was made", "it was never recovered") need special care. Evidence showing an unresolved or still-ongoing situation SUPPORTS such a claim — use TRUE or MOSTLY_TRUE. Only answer FALSE if the evidence shows the negated event actually DID happen (the item was found, an arrest was made). If the evidence simply stops before the outcome is known, use MOSTLY_TRUE when it was still unresolved at that point, otherwise UNVERIFIABLE.
+Use FALSE only when the evidence positively CONTRADICTS the central assertion. Absence of confirmation is not contradiction — if the evidence simply does not mention something, use UNVERIFIABLE.
+
+For negative claims ("the head was never found", "no arrest was made"), evidence showing an unresolved or still-ongoing situation SUPPORTS the claim. Answer FALSE only if the evidence shows the negated event actually DID happen.
 `
     : ''
 
@@ -307,7 +302,7 @@ export async function runPipeline(
     // and because wiki outranks news/web those junk hits were crowding actual
     // reporting out of the prompt. Wikipedia stays valuable for stable facts,
     // so it is limited rather than demoted.
-    sharedPool = dedupeAndCap(merged, POOL_CAP, { wiki: WIKI_POOL_CAP })
+    sharedPool = dedupeAndCap(merged, POOL_CAP, { wiki: 3 })
   }
 
   // ── Phase 2: verify each claim ────────────────────────────────────
@@ -334,33 +329,24 @@ export async function runPipeline(
             }))
         }
 
-        // Retrieval produced nothing usable.
-        if (!evidence.length) {
-          if (config.allowModelKnowledge) {
-            const known = await verifyFromKnowledge(claim, domain)
-            llm_calls++
-            if (known && known.verdict !== config.notFoundVerdict) {
-              return { claim, ...known, evidence: [], knowledge_basis: 'model_knowledge' }
-            }
-          }
-          return {
-            claim,
+        // No evidence and "evidence didn't settle it" are the same outcome, so
+        // they share one exit: produce a notFound verdict, then let the model
+        // knowledge pass (if the domain allows it) try to improve on it.
+        let verification: Omit<ClaimResult, 'claim' | 'evidence' | 'knowledge_basis'>
+        if (evidence.length) {
+          verification = await verifyClaim(claim, evidence, domain)
+          llm_calls++ // verify call
+        } else {
+          verification = {
             truth_score: null,
             verdict: config.notFoundVerdict,
             what_is_wrong: null,
             what_is_missing: 'No sufficiently relevant source found.',
             confidence: 'LOW',
             reference: null,
-            evidence: [],
-            knowledge_basis: 'sources',
           }
         }
 
-        const verification = await verifyClaim(claim, evidence, domain)
-        llm_calls++ // verify call
-
-        // Evidence existed but didn't settle the claim — fall back to what the
-        // model knows rather than leaving the user with nothing.
         if (verification.verdict === config.notFoundVerdict && config.allowModelKnowledge) {
           const known = await verifyFromKnowledge(claim, domain)
           llm_calls++
@@ -400,6 +386,5 @@ export async function runPipeline(
     claims: results,
     llm_calls,
     truncated,
-    evidence_level: web && !fullEvidence ? 'limited' : 'full',
   }
 }

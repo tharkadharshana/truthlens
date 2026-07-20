@@ -43,52 +43,40 @@ export function parseRetryDelaySeconds(body: string): number | null {
 // which multiplies the daily ceiling without paying for a tier upgrade.
 // Exported for testing.
 export function geminiKeys(): string[] {
-  return [
-    process.env.GEMINI_API_KEY,
-    process.env.GEMINI_API_KEY_2,
-    process.env.GEMINI_API_KEY_3,
-  ].filter((k): k is string => !!k && k.trim().length > 0)
+  return [process.env.GEMINI_API_KEY, process.env.GEMINI_API_KEY_2, process.env.GEMINI_API_KEY_3]
+    .filter((k): k is string => !!k && k.trim().length > 0)
 }
 
 export async function embedText(text: string): Promise<number[]> {
   const keys = geminiKeys()
   if (!keys.length) throw new Error('No GEMINI_API_KEY configured (embeddings require one)')
   let lastError = ''
-  // Outer loop: rotate keys. A 429 means "this key is out of quota", so the
-  // next key gets a fresh budget; the inner loop handles transient 503s.
   for (const key of keys) {
-  for (let attempt = 1; attempt <= EMBED_MAX_ATTEMPTS; attempt++) {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${EMBED_MODEL}:embedContent?key=${key}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: `models/${EMBED_MODEL}`,
-          content: { parts: [{ text }] },
-          outputDimensionality: EMBED_DIMENSIONS,
-        }),
-      }
-    )
-    if (res.ok) {
-      const data = await res.json()
-      return data.embedding.values
+    for (let attempt = 1; attempt <= EMBED_MAX_ATTEMPTS; attempt++) {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${EMBED_MODEL}:embedContent?key=${key}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: `models/${EMBED_MODEL}`,
+            content: { parts: [{ text }] },
+            outputDimensionality: EMBED_DIMENSIONS,
+          }),
+        }
+      )
+      if (res.ok) return (await res.json()).embedding.values
+
+      const body = await res.text()
+      lastError = `Gemini embedContent failed: ${res.status} ${body}`
+      // Quota exhausted or retries spent — a different key may still have budget.
+      if (res.status === 429 || attempt === EMBED_MAX_ATTEMPTS) break
+      // Auth/bad-request fails identically on every key, so stop now.
+      if (!isRetryableStatus(res.status)) throw new Error(lastError)
+      await new Promise((r) => setTimeout(r, (parseRetryDelaySeconds(body) ?? attempt) * 1000))
     }
-    const body = await res.text()
-    lastError = `Gemini embedContent failed: ${res.status} ${body}`
-    // 429 = this key is exhausted; stop retrying it and move to the next key.
-    if (res.status === 429) break
-    if (!isRetryableStatus(res.status) || attempt === EMBED_MAX_ATTEMPTS) return failEmbed(lastError)
-    const delaySec = parseRetryDelaySeconds(body) ?? attempt
-    await new Promise((r) => setTimeout(r, delaySec * 1000))
-  }
   }
   throw new Error(lastError)
-}
-
-// Non-retryable, non-quota failure: no other key will do better, so stop.
-function failEmbed(message: string): never {
-  throw new Error(message)
 }
 
 // Verdict generation is provider-agnostic (prompt in, JSON text out), so any

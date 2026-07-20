@@ -171,8 +171,8 @@ import { parseExtractedClaims } from '../lib/pipeline'
   assert.strictEqual(guard('TRUE', 1, 'MEDIUM').reference, null, 'memory never carries a citation')
 }
 
-// ── geminiKeys: rotation list is ordered, skips blanks, dedupes nothing (a
-//    repeated key is the caller's choice) — used to survive daily quota caps. ──
+// ── geminiKeys: ordered rotation list, blanks skipped — lets a second key
+//    take over when the first hits its daily quota cap. ──
 {
   const KEYS = ['GEMINI_API_KEY', 'GEMINI_API_KEY_2', 'GEMINI_API_KEY_3'] as const
   const saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]))
