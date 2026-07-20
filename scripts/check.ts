@@ -5,7 +5,7 @@ import { generateKey, hashKey, clientIp } from '../lib/keys'
 import { resolveProvider, parseRetryDelaySeconds, isRetryableStatus } from '../lib/llm'
 import { verifyTurnstileToken } from '../lib/turnstile'
 import { DOMAINS, DEFAULT_DOMAIN, isDomain } from '../lib/domains'
-import { dedupeAndCap, stripHtml, type Evidence } from '../lib/evidence'
+import { dedupeAndCap, stripHtml, newsQuery, type Evidence } from '../lib/evidence'
 import { parseExtractedClaims } from '../lib/pipeline'
 
 // ── Key hashing: raw never equals stored, hash is stable, prefix matches ──
@@ -94,6 +94,30 @@ import { parseExtractedClaims } from '../lib/pipeline'
 {
   assert.strictEqual(stripHtml('<b>hi</b>&nbsp;there'), 'hi there', 'strips tags and entities')
   assert.strictEqual(stripHtml('a   b\n\nc'), 'a b c', 'collapses whitespace')
+}
+
+// ── newsQuery: GNews ANDs every term, so long natural-language queries match
+//    nothing. Must reduce to a few topical keywords, preferring proper nouns. ──
+{
+  // The real failing case: this full query returned 0 GNews articles.
+  assert.strictEqual(
+    newsQuery('Sri Lanka recently signed a new IMF loan agreement'),
+    'Sri Lanka IMF',
+    'keeps proper nouns, drops stopwords/filler that killed the match'
+  )
+  assert.strictEqual(
+    newsQuery('Donald Trump is the current president of the United States'),
+    'Donald Trump United States',
+    'caps at 4 proper nouns'
+  )
+  // No proper nouns -> fall back to significant words, still capped.
+  assert.strictEqual(
+    newsQuery('vaccines cause autism in children'),
+    'vaccines cause autism children',
+    'falls back to significant words when there are no proper nouns'
+  )
+  assert.ok(newsQuery('a b c').split(' ').length <= 4, 'never exceeds the word cap')
+  assert.strictEqual(newsQuery('the of and'), '', 'all-stopword query yields empty (caller skips)')
 }
 
 // ── parseExtractedClaims: parses JSON array, defaults query, falls back to sentences ──
