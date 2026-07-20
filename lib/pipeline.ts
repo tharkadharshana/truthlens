@@ -88,7 +88,7 @@ async function extractClaimsLLM(text: string): Promise<ExtractedClaim[]> {
   // about one incident.
   const prompt = `Extract each distinct, checkable factual claim from the TEXT below. For each, also write a concise English web-search query that would find evidence for or against it (translate to English if the text is in another language).
 
-CRITICAL: every search_query must be SELF-CONTAINED. Carry over the subject, event, place and date from the wider TEXT — never write a query that relies on the reader having seen the other claims. Resolve pronouns and references like "the girl", "he", "the head", "that case" into the actual named subject and event.
+CRITICAL: both the claim AND the search_query must be SELF-CONTAINED. Carry over the subject, event, place and date from the wider TEXT — never write a claim or query that relies on the reader having seen the other claims. Resolve pronouns and references like "it", "they", "the girl", "the head", "that case" into the actual named subject. For example, if the text says "Section 230 protects platforms. It also shields them from criminal charges.", the second claim must read "Section 230 also shields platforms from criminal charges", not "It also shields them from criminal charges".
 
 Respond ONLY with a JSON array, no prose:
 [{"claim":"<the claim, in its original language>","search_query":"<self-contained English search query>"}]
@@ -275,15 +275,16 @@ export async function runPipeline(
   const web = config.evidence === 'web'
   let llm_calls = 0
 
-  // Claim extraction: LLM for web (handles posts / any language + search
-  // queries), regex for corpus domains.
-  let extracted: ExtractedClaim[]
-  if (web) {
-    extracted = await extractClaimsLLM(text)
-    llm_calls++ // one extraction call
-  } else {
-    extracted = extractClaims(text).map((s) => ({ claim: s, search_query: s }))
-  }
+  // Claim extraction runs for every domain. Corpus domains used a regex
+  // sentence-split, which cannot resolve pronouns: "It also shields them from
+  // federal criminal prosecution." was embedded with no referent and matched
+  // unrelated statutes (TCPA, Title VII) instead of the Section 230 chunks that
+  // actually answer it — a silent NOT_FOUND where the corpus held the answer.
+  // The LLM pass resolves references so the embedded text stands alone.
+  // extractClaimsLLM falls back to the regex split if the model output is
+  // unusable, so this cannot make extraction worse than before.
+  const extracted: ExtractedClaim[] = await extractClaimsLLM(text)
+  llm_calls++ // one extraction call
   const truncated = extracted.length > MAX_CLAIMS
   const claims = extracted.slice(0, MAX_CLAIMS)
 
