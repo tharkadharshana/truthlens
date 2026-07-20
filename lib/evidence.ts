@@ -44,6 +44,26 @@ export function stripHtml(s: string): string {
   return s.replace(/<[^>]+>/g, '').replace(/&[a-z]+;/gi, ' ').replace(/\s+/g, ' ').trim()
 }
 
+const STOPWORDS = new Set([
+  'is', 'are', 'was', 'were', 'be', 'been', 'the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for',
+  'and', 'or', 'that', 'this', 'it', 'its', 'by', 'with', 'from', 'as', 'has', 'have', 'had', 'do',
+  'does', 'did', 'will', 'would', 'can', 'could', 'not', 'no', 'their', 'there', 'which', 'who',
+  'what', 'when', 'where', 'why', 'how', 'recently', 'new', 'current',
+])
+
+// GNews ANDs every query term, so the pipeline's natural-language search query
+// ("Sri Lanka recently signed a new IMF loan agreement") matches zero articles.
+// Proper nouns carry the topic, so prefer them and keep the query short.
+// ponytail: capitalization heuristic. Ceiling: misses topics with no proper
+// nouns, and non-Latin scripts have no case. Upgrade: ask the LLM for a short
+// news query alongside the search query if recall matters.
+export function newsQuery(query: string, maxWords = 4): string {
+  const words = query.replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean)
+  const significant = words.filter((w) => !STOPWORDS.has(w.toLowerCase()))
+  const proper = significant.filter((w) => /^\p{Lu}/u.test(w))
+  return (proper.length >= 2 ? proper : significant).slice(0, maxWords).join(' ')
+}
+
 // ── Network helper ───────────────────────────────────────────────────
 // One transient retry for 429/503 (reuses the same retryable-status policy as
 // embeddings). Any other failure resolves to null — callers map that to [].
@@ -141,7 +161,9 @@ async function searchTavily(query: string): Promise<Evidence[]> {
 async function searchGNews(query: string): Promise<Evidence[]> {
   const key = process.env.GNEWS_API_KEY
   if (!key) return []
-  const url = `https://gnews.io/api/v4/search?q=${encodeURIComponent(query)}&lang=en&max=5&token=${key}`
+  const q = newsQuery(query)
+  if (!q) return []
+  const url = `https://gnews.io/api/v4/search?q=${encodeURIComponent(q)}&lang=en&max=5&token=${key}`
   const data = await fetchJson(url)
   return (data?.articles ?? [])
     .filter((a: any) => a.url && (a.description || a.title))
