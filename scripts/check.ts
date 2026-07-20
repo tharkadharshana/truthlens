@@ -120,6 +120,20 @@ import { parseExtractedClaims } from '../lib/pipeline'
   assert.strictEqual(newsQuery('the of and'), '', 'all-stopword query yields empty (caller skips)')
 }
 
+// ── cache-write guard: a run containing ERROR verdicts must never be persisted.
+//    Caching an internal/provider failure replays that outage to every user
+//    asking the same question for the whole TTL (this happened in production).
+//    Mirrors the predicate in app/api/v1/check/route.ts. ──
+{
+  const shouldCache = (claims: { verdict: string }[]) => !claims.some((c) => c.verdict === 'ERROR')
+
+  assert.strictEqual(shouldCache([{ verdict: 'TRUE' }, { verdict: 'FALSE' }]), true, 'real verdicts are cacheable')
+  assert.strictEqual(shouldCache([{ verdict: 'UNVERIFIABLE' }]), true, 'UNVERIFIABLE is a real answer, cacheable')
+  assert.strictEqual(shouldCache([{ verdict: 'ERROR' }]), false, 'a failed run is never cached')
+  assert.strictEqual(shouldCache([{ verdict: 'TRUE' }, { verdict: 'ERROR' }]), false, 'one ERROR poisons the whole response')
+  assert.strictEqual(shouldCache([]), true, 'no claims -> nothing to poison')
+}
+
 // ── parseExtractedClaims: parses JSON array, defaults query, falls back to sentences ──
 {
   const ok = parseExtractedClaims('```json\n[{"claim":"Eggs are stones","search_query":"are eggs stones"}]\n```', 'orig')
