@@ -19,6 +19,7 @@ type ClaimResult = {
   confidence: string
   reference: { source_name: string; source_url: string | null; relevant_excerpt: string | null } | null
   evidence?: Evidence[]
+  knowledge_basis?: 'sources' | 'model_knowledge'
 }
 type ApiResult = {
   overall_score: number | null
@@ -135,8 +136,9 @@ export default function Landing() {
           <span className="italic" style={{ color: 'var(--verdict)' }}>verdict</span>, not a guess.
         </h1>
         <p className="mt-6 text-lg opacity-75 max-w-2xl leading-relaxed">
-          Any claim, any language — checked live against Wikipedia, professional fact-checkers, and the
-          web. Every verdict comes with a trust score and the real sources behind it. No invented citations.
+          Any claim, any language — checked live against the web, news, Wikipedia and professional
+          fact-checkers. Every verdict comes with a trust score and the real sources behind it, and
+          anything answered without a source is labelled as such. No invented citations, ever.
           Specialized Legal and FINRA-compliance modes for professionals.
         </p>
 
@@ -214,11 +216,11 @@ export default function Landing() {
                   AI-generated and informational only — not legal, financial, or compliance advice. Verify independently.
                   {result.cached && <span className="ml-1 opacity-70">· served from cache</span>}
                 </p>
-                {result.evidence_level === 'limited' && (
+                {result.upgrade_hint && (
                   <a href="/login" className="block text-sm rounded-lg border px-4 py-3 transition hover:opacity-90"
                      style={{ borderColor: 'var(--verdict-dim)' }}>
-                    <span style={{ color: 'var(--verdict)' }}>Limited free check.</span>{' '}
-                    {result.upgrade_hint || 'Get an API key for full web verification.'} →
+                    <span style={{ color: 'var(--verdict)' }}>Same verdicts, more of them.</span>{' '}
+                    {result.upgrade_hint} →
                   </a>
                 )}
                 {result.overall_score !== null && (
@@ -250,8 +252,8 @@ export default function Landing() {
       <section id="pricing" className="px-6 md:px-10 py-16 border-t max-w-5xl mx-auto" style={{ borderColor: 'var(--line)' }}>
         <h2 style={{ fontFamily: 'var(--font-display)' }} className="text-3xl font-medium mb-8">Pricing</h2>
         <div className="grid md:grid-cols-2 gap-5">
-          <Tier name="Free" price="$0" lines={['5 general checks / hour', 'No key, no sign-up', 'Wikipedia + fact-check sources', 'Full structured verdicts']} cta="Use it above" href="#api" muted />
-          <Tier name="Pro" price="Free in beta" lines={['1,000 requests / hour', 'Full web + news evidence', 'All domains: general, legal, FINRA', 'API key, dashboard & history']} cta="Get a key" href="/login" />
+          <Tier name="Free" price="$0" lines={['5 general checks / hour', 'No key, no sign-up', 'Full web, news & fact-check evidence', 'The same verdicts Pro returns']} cta="Use it above" href="#api" muted />
+          <Tier name="Pro" price="Free in beta" lines={['1,000 requests / hour', 'Programmatic API access', 'All domains: general, legal, FINRA', 'Dashboard & saved history']} cta="Get a key" href="/login" />
         </div>
       </section>
 
@@ -304,6 +306,11 @@ function ClaimCard({ c }: { c: ClaimResult }) {
         {c.truth_score !== null && <span className="ledger">score {Math.round(c.truth_score * 100)}%</span>}
         <span>confidence {c.confidence.toLowerCase()}</span>
       </div>
+      {c.knowledge_basis === 'model_knowledge' && (
+        <p className="text-xs rounded-md px-3 py-2 mb-3" style={{ border: '1px solid var(--alter)', color: 'var(--alter)' }}>
+          From the model&apos;s own knowledge — no source was retrieved for this claim. Treat as a lead to verify, not a cited fact.
+        </p>
+      )}
       {c.what_is_wrong && <Field label="What's wrong" body={c.what_is_wrong} />}
       {c.what_is_missing && <Field label="What's missing" body={c.what_is_missing} />}
       {c.reference?.source_url && (

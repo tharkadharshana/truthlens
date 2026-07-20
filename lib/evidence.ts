@@ -26,14 +26,23 @@ const CACHE_TTL_SECONDS = 60 * 60 * 24 // 24h — viral/repeat claims reuse the 
 // then dedupe by URL, then cap. Order within a kind is preserved.
 const KIND_RANK: Record<EvidenceKind, number> = { factcheck: 0, corpus: 0, wiki: 1, news: 2, web: 3 }
 
-export function dedupeAndCap(items: Evidence[], cap = EVIDENCE_CAP): Evidence[] {
+export function dedupeAndCap(
+  items: Evidence[],
+  cap = EVIDENCE_CAP,
+  perKindCap: Partial<Record<EvidenceKind, number>> = {}
+): Evidence[] {
   const seen = new Set<string>()
+  const kindCount: Partial<Record<EvidenceKind, number>> = {}
   const sorted = [...items].sort((a, b) => KIND_RANK[a.kind] - KIND_RANK[b.kind])
   const out: Evidence[] = []
   for (const e of sorted) {
     const key = e.source_url || e.snippet
     if (seen.has(key)) continue
+    const limit = perKindCap[e.kind]
+    const used = kindCount[e.kind] ?? 0
+    if (limit !== undefined && used >= limit) continue
     seen.add(key)
+    kindCount[e.kind] = used + 1
     out.push(e)
     if (out.length >= cap) break
   }
