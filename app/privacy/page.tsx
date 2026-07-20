@@ -13,11 +13,13 @@ export default function Privacy() {
         <p>API keys are stored as SHA-256 hashes only. The raw key is shown once at creation and never stored in retrievable form.</p>
         <p>Text you submit to the claim-verification endpoint, and your IP address (used only for free-tier rate limiting, not stored longer than the rate-limit window).</p>
         <p>Usage metadata: request counts, claim counts, timestamps, and status codes, associated with your account or IP — used for rate limiting and billing.</p>
+        <p><strong>Submitted text and results are stored.</strong> Each check — the text you submit and the verdict produced — is saved to power your check history and a shared response cache (an identical submission may be served a previously computed result to save cost and time). This includes anonymous checks made without an account, which are stored but not linked to any identity beyond the request. Signed-in users can view their own history from the dashboard.</p>
       </Section>
 
       <Section title="Where it goes">
         <p>Submitted claim text is sent to third-party AI providers to generate a verdict: Google (Gemini, always, for retrieval) and whichever of Google, OpenAI, or DeepSeek is configured for verdict generation. Each provider processes that text under its own terms — we do not control their retention policies.</p>
-        <p>Account and usage data is stored with Supabase (Postgres) and Upstash (Redis), both third-party infrastructure providers.</p>
+        <p>For general fact-checking, your text (or an English translation of it) is also sent as a search query to evidence providers — Wikipedia, Google Fact Check Tools, and, for API-key requests, Tavily and GNews — to retrieve the sources a verdict cites.</p>
+        <p>Account, usage, and check-history data is stored with Supabase (Postgres) and Upstash (Redis), both third-party infrastructure providers.</p>
       </Section>
 
       <Section title="What we don't do">

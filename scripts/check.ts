@@ -5,6 +5,8 @@ import { generateKey, hashKey, clientIp } from '../lib/keys'
 import { resolveProvider, parseRetryDelaySeconds, isRetryableStatus } from '../lib/llm'
 import { verifyTurnstileToken } from '../lib/turnstile'
 import { DOMAINS, DEFAULT_DOMAIN, isDomain } from '../lib/domains'
+import { dedupeAndCap, stripHtml, type Evidence } from '../lib/evidence'
+import { parseExtractedClaims } from '../lib/pipeline'
 
 // ── Key hashing: raw never equals stored, hash is stable, prefix matches ──
 {
@@ -61,9 +63,53 @@ import { DOMAINS, DEFAULT_DOMAIN, isDomain } from '../lib/domains'
   assert.ok(!isDomain('made_up_domain'), 'unknown string is not a valid domain')
   assert.ok(!isDomain(undefined), 'undefined is not a valid domain')
   assert.ok(DOMAINS[DEFAULT_DOMAIN], 'DEFAULT_DOMAIN resolves to a real config')
+  assert.ok(isDomain('general'), 'general is a valid domain')
   for (const [key, config] of Object.entries(DOMAINS)) {
     assert.ok(config.verdicts.includes(config.notFoundVerdict), `${key}.notFoundVerdict must be one of its own verdicts`)
+    assert.ok(config.evidence === 'corpus' || config.evidence === 'web', `${key}.evidence must be corpus|web`)
   }
+  assert.strictEqual(DOMAINS.general.evidence, 'web', 'general uses web evidence')
+  assert.strictEqual(DOMAINS.legal_statute.evidence, 'corpus', 'legal_statute uses corpus evidence')
+}
+
+// ── evidence dedupeAndCap: fact-checks rank first, URL dedupe, hard cap ──
+{
+  const ev = (kind: Evidence['kind'], url: string): Evidence => ({ source_name: url, source_url: url, snippet: 's', kind })
+  const items: Evidence[] = [
+    ev('web', 'https://a.com'),
+    ev('factcheck', 'https://b.com'),
+    ev('wiki', 'https://a.com'),      // dup URL of the web item
+    ev('news', 'https://c.com'),
+  ]
+  const out = dedupeAndCap(items, 10)
+  assert.strictEqual(out[0].kind, 'factcheck', 'factcheck sorts to the front')
+  assert.strictEqual(out.length, 3, 'duplicate URL is dropped')
+  assert.deepStrictEqual(out.map((e) => e.source_url).sort(), ['https://a.com', 'https://b.com', 'https://c.com'], 'one entry per URL')
+
+  const many: Evidence[] = Array.from({ length: 20 }, (_, i) => ev('web', `https://x${i}.com`))
+  assert.strictEqual(dedupeAndCap(many, 10).length, 10, 'caps at the requested limit')
+}
+
+// ── stripHtml: removes tags + entities, collapses whitespace ──
+{
+  assert.strictEqual(stripHtml('<b>hi</b>&nbsp;there'), 'hi there', 'strips tags and entities')
+  assert.strictEqual(stripHtml('a   b\n\nc'), 'a b c', 'collapses whitespace')
+}
+
+// ── parseExtractedClaims: parses JSON array, defaults query, falls back to sentences ──
+{
+  const ok = parseExtractedClaims('```json\n[{"claim":"Eggs are stones","search_query":"are eggs stones"}]\n```', 'orig')
+  assert.strictEqual(ok.length, 1, 'parses one claim')
+  assert.strictEqual(ok[0].search_query, 'are eggs stones', 'keeps provided search query')
+
+  const noQuery = parseExtractedClaims('[{"claim":"Sky is blue"}]', 'orig')
+  assert.strictEqual(noQuery[0].search_query, 'Sky is blue', 'defaults query to the claim text')
+
+  const fallback = parseExtractedClaims('not json at all', 'Russia is the largest country in the world. Eggs are stones.')
+  assert.ok(fallback.length >= 1, 'falls back to sentence split on unparseable output')
+  assert.strictEqual(fallback[0].claim, fallback[0].search_query, 'fallback query mirrors the sentence')
+
+  assert.deepStrictEqual(parseExtractedClaims('[]', 'orig short'), [], 'empty array yields no claims when text too short to split')
 }
 
 // ── ingest chunk(): mirrors scripts/ingest.ts's sentence-packing logic

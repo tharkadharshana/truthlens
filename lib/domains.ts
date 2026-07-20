@@ -2,14 +2,15 @@
 // Everything else (embedding, retrieval, provider selection, API plumbing)
 // is shared — see lib/pipeline.ts.
 
-export type Domain = 'legal_statute' | 'finra_compliance'
+export type Domain = 'legal_statute' | 'finra_compliance' | 'general'
 
 export type DomainConfig = {
   label: string
   verdicts: readonly string[]
-  notFoundVerdict: string       // returned when no corpus match clears SIM_THRESHOLD
+  notFoundVerdict: string       // returned when no corpus/web match clears the bar
   role: string                  // "You are a ___" — sets the reviewer persona
   sourceLabel: string           // e.g. "SOURCES" vs "REGULATORY RULES"
+  evidence: 'corpus' | 'web'    // corpus = pgvector match_corpus; web = lib/evidence.ts
 }
 
 export const DOMAINS: Record<Domain, DomainConfig> = {
@@ -19,6 +20,7 @@ export const DOMAINS: Record<Domain, DomainConfig> = {
     notFoundVerdict: 'NOT_FOUND',
     role: 'legal fact-checker',
     sourceLabel: 'SOURCES',
+    evidence: 'corpus',
   },
   finra_compliance: {
     label: 'FINRA/SEC marketing compliance',
@@ -26,6 +28,15 @@ export const DOMAINS: Record<Domain, DomainConfig> = {
     notFoundVerdict: 'NOT_FOUND',
     role: 'FINRA/SEC marketing compliance reviewer, auditing financial advisor communications against FINRA Rule 2210 and SEC Marketing Rule 206(4)-1',
     sourceLabel: 'REGULATORY RULES',
+    evidence: 'corpus',
+  },
+  general: {
+    label: 'General fact-checking',
+    verdicts: ['TRUE', 'MOSTLY_TRUE', 'MISLEADING', 'FALSE', 'UNVERIFIABLE'],
+    notFoundVerdict: 'UNVERIFIABLE',
+    role: 'rigorous fact-checker. Judge the claim ONLY against the provided evidence. If the evidence is insufficient to reach a verdict, respond UNVERIFIABLE — never rely on your own prior knowledge',
+    sourceLabel: 'EVIDENCE',
+    evidence: 'web',
   },
 }
 

@@ -56,10 +56,29 @@ create index if not exists corpus_embedding_idx on public.corpus_chunks
   using ivfflat (embedding vector_cosine_ops) with (lists = 100);
 create index if not exists corpus_domain_idx on public.corpus_chunks(domain);
 
+-- ── Checks (history + cross-user response cache) ────────────────────
+-- Every check (all domains, all tiers, incl. anonymous) is persisted. Doubles
+-- as a shared cache: an identical input_hash within the freshness window is
+-- served from here with zero LLM/search cost. See lib/pipeline.ts + route.ts.
+create table if not exists public.checks (
+  id uuid primary key default gen_random_uuid(),
+  api_key_id uuid references public.api_keys(id) on delete set null, -- null = anonymous
+  domain text not null,
+  input_text text not null,
+  input_hash text not null,      -- sha256(normalized_text || domain || evidence_level)
+  evidence_level text not null,  -- 'full' | 'limited' — separate cache namespaces per tier
+  response jsonb not null,       -- full API response payload (claims, evidence, scores)
+  overall_score real,
+  created_at timestamptz default now()
+);
+create index if not exists checks_hash_idx on public.checks(input_hash, created_at desc); -- cache lookup
+create index if not exists checks_key_idx  on public.checks(api_key_id, created_at desc); -- history
+
 -- ── RLS ─────────────────────────────────────────────────────────────
 alter table public.profiles     enable row level security;
 alter table public.api_keys     enable row level security;
 alter table public.usage_logs   enable row level security;
+alter table public.checks       enable row level security;
 -- corpus_chunks: RLS on, no policies — only the service-role client
 -- (lib/db.ts getDb(), which bypasses RLS) ever queries this table; nothing
 -- reads it via the anon key, so deny-all-by-default is correct here.
@@ -78,6 +97,15 @@ create policy "own keys read" on public.api_keys
 -- usage_logs: owner read only (via join to api_keys)
 drop policy if exists "own usage read" on public.usage_logs;
 create policy "own usage read" on public.usage_logs
+  for select using (
+    api_key_id in (select id from public.api_keys where user_id = auth.uid())
+  );
+
+-- checks: owner read only (via join to api_keys). Writes + cache lookups go
+-- through the service-role client (lib/db.ts getDb(), bypasses RLS). Anonymous
+-- rows (null api_key_id) match no owner and are never exposed as history.
+drop policy if exists "own checks read" on public.checks;
+create policy "own checks read" on public.checks
   for select using (
     api_key_id in (select id from public.api_keys where user_id = auth.uid())
   );
@@ -110,6 +138,24 @@ language sql stable as $$
   where domain = match_domain
   order by embedding <=> query_embedding
   limit match_count;
+$$;
+
+-- ── Response cache lookup ───────────────────────────────────────────
+-- Returns the freshest cached response for an input_hash, but only if it's
+-- younger than max_age_seconds. Keeps the freshness policy in one place; old
+-- rows are retained for history (not deleted), just not served as cache.
+create or replace function public.lookup_cached_check(
+  p_input_hash text,
+  p_max_age_seconds int
+)
+returns table (response jsonb, created_at timestamptz)
+language sql stable as $$
+  select response, created_at
+  from public.checks
+  where input_hash = p_input_hash
+    and created_at > now() - make_interval(secs => p_max_age_seconds)
+  order by created_at desc
+  limit 1;
 $$;
 
 -- ── Monthly usage rollup for billing dashboard ──────────────────────

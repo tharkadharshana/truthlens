@@ -4,21 +4,33 @@ import { getBrowserClient } from '@/lib/supabase-browser'
 
 type Key = { id: string; key_prefix: string; tier: string; created_at: string; last_used_at: string | null }
 type Usage = { period: string; total_requests: number; total_claims: number; total_llm_calls: number }
+type Check = {
+  id: string
+  domain: string
+  input_text: string
+  overall_score: number | null
+  response: { evidence_level?: string } | null
+  created_at: string
+}
 
 export default function DashboardClient() {
   const [keys, setKeys] = useState<Key[]>([])
   const [usage, setUsage] = useState<Usage[]>([])
+  const [history, setHistory] = useState<Check[]>([])
+  const [expanded, setExpanded] = useState<string | null>(null)
   const [newKey, setNewKey] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
 
   const load = useCallback(async () => {
-    const [k, u] = await Promise.all([
+    const [k, u, h] = await Promise.all([
       fetch('/api/keys').then((r) => r.json()),
       fetch('/api/usage').then((r) => r.json()),
+      fetch('/api/history').then((r) => r.json()).catch(() => ({ checks: [] })),
     ])
     setKeys(Array.isArray(k) ? k : [])
     setUsage(Array.isArray(u) ? u : [])
+    setHistory(Array.isArray(h?.checks) ? h.checks : [])
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -134,6 +146,45 @@ export default function DashboardClient() {
               </tbody>
             </table>
           ) : <p className="text-sm opacity-50">No usage yet.</p>}
+        </section>
+
+        {/* Check history */}
+        <section className="rounded-2xl border p-6" style={{ borderColor: 'var(--line)', background: 'var(--paper)' }}>
+          <h2 className="font-medium mb-1">History</h2>
+          <p className="text-sm opacity-50 mb-5">Your recent checks. Click one to see the full result.</p>
+          {history.length ? (
+            <div className="space-y-2">
+              {history.map((c) => {
+                const pct = c.overall_score === null ? null : Math.round(c.overall_score * 100)
+                const open = expanded === c.id
+                return (
+                  <div key={c.id} className="rounded-lg border" style={{ borderColor: 'var(--line)' }}>
+                    <button
+                      onClick={() => setExpanded(open ? null : c.id)}
+                      className="w-full text-left p-4 flex items-start justify-between gap-4"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm truncate">{c.input_text}</p>
+                        <p className="text-xs opacity-40 mt-1">
+                          {c.domain} · {new Date(c.created_at).toLocaleString()}
+                        </p>
+                      </div>
+                      {pct !== null && (
+                        <span className="text-sm shrink-0 ledger" style={{ fontFamily: 'var(--font-mono)', color: 'var(--verdict)' }}>
+                          {pct}%
+                        </span>
+                      )}
+                    </button>
+                    {open && (
+                      <pre className="text-xs overflow-auto border-t p-4 leading-relaxed" style={{ borderColor: 'var(--line)', fontFamily: 'var(--font-mono)' }}>
+                        {JSON.stringify(c.response, null, 2)}
+                      </pre>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          ) : <p className="text-sm opacity-50">No checks yet.</p>}
         </section>
       </div>
     </main>
