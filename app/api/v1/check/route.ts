@@ -3,7 +3,7 @@ import * as Sentry from '@sentry/nextjs'
 import { checkLimit, type Tier } from '@/lib/ratelimit'
 import { runPipeline, type ClaimResult } from '@/lib/pipeline'
 import { getDb } from '@/lib/db'
-import { getRedis, GLOBAL_COUNTER_KEY } from '@/lib/redis'
+import { getRedis, GLOBAL_COUNTER_KEY, FREE_DAILY_CAP, globalDailyKey } from '@/lib/redis'
 import { hashKey, clientIp } from '@/lib/keys'
 import { DOMAINS, DEFAULT_DOMAIN, isDomain, DISCLAIMER, type Domain } from '@/lib/domains'
 import { verifyTurnstileToken } from '@/lib/turnstile'
@@ -195,6 +195,34 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     console.error('cache lookup threw', e)
     Sentry.captureException(e)
+  }
+
+  // ── Global daily circuit breaker (anonymous only, cache-miss only) ──
+  // Per-IP limits can't stop IP rotation; this global ceiling can. Only cache
+  // misses reach here, so cached repeats of an attack stay free. Fails OPEN: a
+  // broken counter must not take down the free tier (the per-IP limit still
+  // applies). Keyed callers are exempt — they pay and have their own limit.
+  if (!keyRow) {
+    try {
+      const redis = getRedis()
+      const dayKey = globalDailyKey()
+      const count = await redis.incr(dayKey)
+      if (count === 1) await redis.expire(dayKey, 60 * 60 * 48) // auto-reset, 48h TTL
+      if (count > FREE_DAILY_CAP) {
+        await logUsage({ api_key_id: null, identifier, tier, domain, claims: 0, llm_calls: 0, status: 503 })
+        return NextResponse.json(
+          {
+            error: `The free demo has reached today's shared capacity of ${FREE_DAILY_CAP} checks. ` +
+              `Get a free API key for uninterrupted access, or try again tomorrow.`,
+            at_capacity: true,
+          },
+          { status: 503, headers: rlHeaders }
+        )
+      }
+    } catch (e) {
+      console.error('daily cap check failed', e)
+      Sentry.captureException(e)
+    }
   }
 
   // ── Run pipeline ───────────────────────────────────────────────────

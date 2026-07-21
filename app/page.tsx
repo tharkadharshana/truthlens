@@ -208,6 +208,13 @@ export default function Landing() {
               </button>
             </div>
 
+            {/* Upfront about the free limits — no surprises when a cap is hit. */}
+            <p className="mt-3 text-xs opacity-40 leading-relaxed">
+              Free demo: 5 checks/hour, and a shared daily limit across all visitors — it can run out on busy days.
+              No signup. <a href="/login" className="underline underline-offset-2 hover:opacity-100">Get a free API key</a> for
+              1,000/hour and the Legal &amp; FINRA modes.
+            </p>
+
             {err && <p className="mt-4 text-sm" style={{ color: 'var(--alter)' }}>{err}</p>}
 
             {result && (

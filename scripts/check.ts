@@ -6,6 +6,7 @@ import { resolveProvider, parseRetryDelaySeconds, isRetryableStatus } from '../l
 import { verifyTurnstileToken } from '../lib/turnstile'
 import { DOMAINS, DEFAULT_DOMAIN, isDomain } from '../lib/domains'
 import { dedupeAndCap, stripHtml, newsQuery, type Evidence } from '../lib/evidence'
+import { globalDailyKey } from '../lib/redis'
 import { geminiKeys } from '../lib/llm'
 import { parseExtractedClaims } from '../lib/pipeline'
 
@@ -102,6 +103,16 @@ import { parseExtractedClaims } from '../lib/pipeline'
   assert.strictEqual(capFor(3), 3, 'free tier cap of 3 applies')
   assert.strictEqual(capFor(undefined), HARD, 'keyed tier gets the full hard cap')
   assert.strictEqual(capFor(50), HARD, 'a caller can never raise the cap above the hard max')
+}
+
+// ── global daily circuit-breaker key: one bucket per UTC day, resets at rollover ──
+{
+  const a = globalDailyKey(new Date('2026-07-20T23:59:59Z'))
+  const b = globalDailyKey(new Date('2026-07-21T00:00:01Z'))
+  const a2 = globalDailyKey(new Date('2026-07-20T08:00:00Z'))
+  assert.strictEqual(a, 'truthlens:global:daily:2026-07-20', 'key carries the UTC date')
+  assert.strictEqual(a, a2, 'same UTC day -> same bucket (shared global counter)')
+  assert.notStrictEqual(a, b, 'crossing midnight UTC -> a fresh bucket, so the cap resets daily')
 }
 
 // ── evidence dedupeAndCap: fact-checks rank first, URL dedupe, hard cap ──
