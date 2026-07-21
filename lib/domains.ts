@@ -17,6 +17,11 @@ export type DomainConfig = {
   // must stay strictly source-backed — a professional acting on a remembered
   // statute is exactly the failure this product exists to prevent.
   allowModelKnowledge: boolean
+  // Requires an API key. The professional/compliance domains are the paid
+  // product; the free no-signup tier is general-only. Kept separate from
+  // allowModelKnowledge on purpose — that's a correctness rule, this is a
+  // monetization boundary, and they need not move together forever.
+  proOnly: boolean
 }
 
 export const DOMAINS: Record<Domain, DomainConfig> = {
@@ -28,6 +33,7 @@ export const DOMAINS: Record<Domain, DomainConfig> = {
     sourceLabel: 'SOURCES',
     evidence: 'corpus',
     allowModelKnowledge: false,
+    proOnly: true,
   },
   finra_compliance: {
     label: 'FINRA/SEC marketing compliance',
@@ -37,6 +43,7 @@ export const DOMAINS: Record<Domain, DomainConfig> = {
     sourceLabel: 'REGULATORY RULES',
     evidence: 'corpus',
     allowModelKnowledge: false,
+    proOnly: true,
   },
   general: {
     label: 'General fact-checking',
@@ -46,6 +53,7 @@ export const DOMAINS: Record<Domain, DomainConfig> = {
     sourceLabel: 'EVIDENCE',
     evidence: 'web',
     allowModelKnowledge: true,
+    proOnly: false,
   },
 }
 

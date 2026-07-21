@@ -13,6 +13,11 @@ export const maxDuration = 60          // Vercel Pro allows 60s; Hobby caps at 1
 
 type KeyRow = { id: string; tier: string; revoked: boolean } | null
 
+// Anonymous requests are capped to fewer claims than the MAX_CLAIMS a keyed
+// caller gets. Bounds the paid Tavily/GNews spend on the free tier (one search
+// runs per extracted claim) without touching answer quality on short inputs.
+const FREE_MAX_CLAIMS = 3
+
 // Cache freshness: general facts/news move fast, corpus law is stable.
 const CACHE_MAX_AGE_SECONDS: Record<Domain, number> = {
   general: 60 * 60 * 24,       // 24h
@@ -27,11 +32,13 @@ const UPGRADE_HINT =
   'Free tier is limited to 5 checks per hour. Get a free API key for 1,000/hour, programmatic access, saved history, and the Legal and FINRA compliance modes.'
 
 // Normalize before hashing: trim + collapse whitespace. Case is preserved (it
-// can carry meaning). Namespaced by domain so the same sentence checked as
-// legal and as general stays two separate cache entries.
-function inputHash(text: string, domain: Domain): string {
+// can carry meaning). Namespaced by domain AND tier: the free tier caps claims
+// lower than a keyed caller, so their results genuinely differ and must not
+// share a cache entry (a free 3-claim result would otherwise be served to a
+// paid caller who should get the full set, and vice versa).
+function inputHash(text: string, domain: Domain, tier: string): string {
   const normalized = text.trim().replace(/\s+/g, ' ')
-  return hashKey(`${normalized} ${domain}`)
+  return hashKey(`${normalized} ${domain} ${tier}`)
 }
 
 function withPercentages(claims: ClaimResult[]) {
@@ -119,6 +126,17 @@ export async function POST(req: NextRequest) {
     )
   }
 
+  // ── Paywall: compliance domains are the paid product ───────────────
+  // The free no-signup tier is general-only. DEFAULT_DOMAIN is a corpus domain,
+  // so a keyless caller who omits `domain` lands here — point them at general.
+  if (DOMAINS[domain].proOnly && !keyRow) {
+    await logUsage({ api_key_id: null, identifier, tier, domain, claims: 0, llm_calls: 0, status: 401 })
+    return NextResponse.json(
+      { error: `The "${domain}" domain requires an API key. Use domain "general" for free access, or get a key at /login.` },
+      { status: 401, headers: rlHeaders }
+    )
+  }
+
   if (!body || typeof body.text !== 'string') {
     await logUsage({ api_key_id: keyRow?.id ?? null, identifier, tier, domain, claims: 0, llm_calls: 0, status: 400 })
     return NextResponse.json({ error: 'Body must be JSON with a "text" string field' }, { status: 400, headers: rlHeaders })
@@ -150,7 +168,8 @@ export async function POST(req: NextRequest) {
   // domains, not on answer quality. Affordable because evidence is now pooled
   // per request rather than searched per claim.
   const fullEvidence = true
-  const hash = inputHash(text, domain)
+  // Cache namespace differs by tier because the claim cap does (see inputHash).
+  const hash = inputHash(text, domain, keyRow ? 'keyed' : 'free')
 
   // ── Response cache: identical input within the freshness window ────
   // supabase-js returns { error } instead of throwing, so check it explicitly.
@@ -180,7 +199,10 @@ export async function POST(req: NextRequest) {
 
   // ── Run pipeline ───────────────────────────────────────────────────
   try {
-    const result = await runPipeline(text, domain, { fullEvidence })
+    const result = await runPipeline(text, domain, {
+      fullEvidence,
+      maxClaims: keyRow ? undefined : FREE_MAX_CLAIMS,
+    })
 
     // The payload we both return and persist (volatile fields added per-request).
     const payload = {

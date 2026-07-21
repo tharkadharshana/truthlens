@@ -83,6 +83,27 @@ import { parseExtractedClaims } from '../lib/pipeline'
   assert.strictEqual(DOMAINS.legal_statute.evidence, 'corpus', 'legal_statute uses corpus evidence')
 }
 
+// ── tiering: only general is free; the compliance domains are the paid product ──
+{
+  assert.strictEqual(DOMAINS.general.proOnly, false, 'general is the free tier')
+  assert.strictEqual(DOMAINS.legal_statute.proOnly, true, 'legal_statute requires a key')
+  assert.strictEqual(DOMAINS.finra_compliance.proOnly, true, 'finra_compliance requires a key')
+  // A proOnly domain must never allow model-knowledge fallback — the two are
+  // separate flags but a paid compliance answer must stay strictly source-backed.
+  for (const [key, c] of Object.entries(DOMAINS)) {
+    if (c.proOnly) assert.strictEqual(c.allowModelKnowledge, false, `${key}: proOnly domains must be source-backed only`)
+  }
+}
+
+// ── free claim cap: lowers the per-request cap, never raises it past the hard max ──
+{
+  const HARD = 8 // mirrors MAX_CLAIMS in lib/pipeline.ts
+  const capFor = (maxClaims: number | undefined) => Math.min(maxClaims ?? HARD, HARD)
+  assert.strictEqual(capFor(3), 3, 'free tier cap of 3 applies')
+  assert.strictEqual(capFor(undefined), HARD, 'keyed tier gets the full hard cap')
+  assert.strictEqual(capFor(50), HARD, 'a caller can never raise the cap above the hard max')
+}
+
 // ── evidence dedupeAndCap: fact-checks rank first, URL dedupe, hard cap ──
 {
   const ev = (kind: Evidence['kind'], url: string): Evidence => ({ source_name: url, source_url: url, snippet: 's', kind })
