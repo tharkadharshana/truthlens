@@ -47,6 +47,16 @@ import { parseExtractedClaims } from '../lib/pipeline'
       return verdicts.includes(p.verdict) ? p : null
     } catch { return null }
   }
+  // "Unknown" must never render as 0%. A notFound-style verdict carries no
+  // score, so the UI can't show "0%" for a claim we simply couldn't check —
+  // that is indistinguishable from one we actively disproved.
+  const scoreFor = (verdict: string, raw: number | null, notFound: string) =>
+    verdict === notFound ? null : raw
+  assert.strictEqual(scoreFor('UNVERIFIABLE', 0, 'UNVERIFIABLE'), null, 'UNVERIFIABLE carries no score')
+  assert.strictEqual(scoreFor('NOT_FOUND', 0, 'NOT_FOUND'), null, 'NOT_FOUND carries no score')
+  assert.strictEqual(scoreFor('FALSE', 0, 'UNVERIFIABLE'), 0, 'a real FALSE keeps its 0')
+  assert.strictEqual(scoreFor('TRUE', 1, 'UNVERIFIABLE'), 1, 'a real TRUE keeps its score')
+
   const legalVerdicts = DOMAINS.legal_statute.verdicts
   assert.ok(parse('```json\n{"verdict":"ALTERED"}\n```', legalVerdicts), 'strips fences + parses')
   assert.ok(parse('Sure! {"verdict":"SUPPORTED"} hope that helps', legalVerdicts), 'extracts embedded object')
