@@ -11,6 +11,12 @@ export type DomainConfig = {
   role: string                  // "You are a ___" — sets the reviewer persona
   sourceLabel: string           // e.g. "SOURCES" vs "REGULATORY RULES"
   evidence: 'corpus' | 'web'    // corpus = pgvector match_corpus; web = lib/evidence.ts
+  // When retrieval finds nothing, may the model answer from its own training
+  // knowledge (clearly labelled, confidence-capped, never with a citation)?
+  // TRUE only for consumer general-purpose checking. Legal/compliance verdicts
+  // must stay strictly source-backed — a professional acting on a remembered
+  // statute is exactly the failure this product exists to prevent.
+  allowModelKnowledge: boolean
 }
 
 export const DOMAINS: Record<Domain, DomainConfig> = {
@@ -21,6 +27,7 @@ export const DOMAINS: Record<Domain, DomainConfig> = {
     role: 'legal fact-checker',
     sourceLabel: 'SOURCES',
     evidence: 'corpus',
+    allowModelKnowledge: false,
   },
   finra_compliance: {
     label: 'FINRA/SEC marketing compliance',
@@ -29,6 +36,7 @@ export const DOMAINS: Record<Domain, DomainConfig> = {
     role: 'FINRA/SEC marketing compliance reviewer, auditing financial advisor communications against FINRA Rule 2210 and SEC Marketing Rule 206(4)-1',
     sourceLabel: 'REGULATORY RULES',
     evidence: 'corpus',
+    allowModelKnowledge: false,
   },
   general: {
     label: 'General fact-checking',
@@ -37,6 +45,7 @@ export const DOMAINS: Record<Domain, DomainConfig> = {
     role: 'rigorous fact-checker. Judge the claim ONLY against the provided evidence. If the evidence is insufficient to reach a verdict, respond UNVERIFIABLE — never rely on your own prior knowledge',
     sourceLabel: 'EVIDENCE',
     evidence: 'web',
+    allowModelKnowledge: true,
   },
 }
 

@@ -37,30 +37,44 @@ export function parseRetryDelaySeconds(body: string): number | null {
   }
 }
 
+// Gemini's free tier has a hard daily embedding cap that a single corpus
+// ingest can exhaust — that has already killed a real ingest run mid-way.
+// Additional keys are tried in order once the previous one is quota-exhausted,
+// which multiplies the daily ceiling without paying for a tier upgrade.
+// Exported for testing.
+export function geminiKeys(): string[] {
+  return [process.env.GEMINI_API_KEY, process.env.GEMINI_API_KEY_2, process.env.GEMINI_API_KEY_3]
+    .filter((k): k is string => !!k && k.trim().length > 0)
+}
+
 export async function embedText(text: string): Promise<number[]> {
+  const keys = geminiKeys()
+  if (!keys.length) throw new Error('No GEMINI_API_KEY configured (embeddings require one)')
   let lastError = ''
-  for (let attempt = 1; attempt <= EMBED_MAX_ATTEMPTS; attempt++) {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${EMBED_MODEL}:embedContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: `models/${EMBED_MODEL}`,
-          content: { parts: [{ text }] },
-          outputDimensionality: EMBED_DIMENSIONS,
-        }),
-      }
-    )
-    if (res.ok) {
-      const data = await res.json()
-      return data.embedding.values
+  for (const key of keys) {
+    for (let attempt = 1; attempt <= EMBED_MAX_ATTEMPTS; attempt++) {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${EMBED_MODEL}:embedContent?key=${key}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: `models/${EMBED_MODEL}`,
+            content: { parts: [{ text }] },
+            outputDimensionality: EMBED_DIMENSIONS,
+          }),
+        }
+      )
+      if (res.ok) return (await res.json()).embedding.values
+
+      const body = await res.text()
+      lastError = `Gemini embedContent failed: ${res.status} ${body}`
+      // Quota exhausted or retries spent — a different key may still have budget.
+      if (res.status === 429 || attempt === EMBED_MAX_ATTEMPTS) break
+      // Auth/bad-request fails identically on every key, so stop now.
+      if (!isRetryableStatus(res.status)) throw new Error(lastError)
+      await new Promise((r) => setTimeout(r, (parseRetryDelaySeconds(body) ?? attempt) * 1000))
     }
-    const body = await res.text()
-    lastError = `Gemini embedContent failed: ${res.status} ${body}`
-    if (!isRetryableStatus(res.status) || attempt === EMBED_MAX_ATTEMPTS) break
-    const delaySec = parseRetryDelaySeconds(body) ?? attempt
-    await new Promise((r) => setTimeout(r, delaySec * 1000))
   }
   throw new Error(lastError)
 }

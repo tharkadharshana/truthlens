@@ -6,6 +6,7 @@ import { resolveProvider, parseRetryDelaySeconds, isRetryableStatus } from '../l
 import { verifyTurnstileToken } from '../lib/turnstile'
 import { DOMAINS, DEFAULT_DOMAIN, isDomain } from '../lib/domains'
 import { dedupeAndCap, stripHtml, newsQuery, type Evidence } from '../lib/evidence'
+import { geminiKeys } from '../lib/llm'
 import { parseExtractedClaims } from '../lib/pipeline'
 
 // ── Key hashing: raw never equals stored, hash is stable, prefix matches ──
@@ -46,6 +47,16 @@ import { parseExtractedClaims } from '../lib/pipeline'
       return verdicts.includes(p.verdict) ? p : null
     } catch { return null }
   }
+  // "Unknown" must never render as 0%. A notFound-style verdict carries no
+  // score, so the UI can't show "0%" for a claim we simply couldn't check —
+  // that is indistinguishable from one we actively disproved.
+  const scoreFor = (verdict: string, raw: number | null, notFound: string) =>
+    verdict === notFound ? null : raw
+  assert.strictEqual(scoreFor('UNVERIFIABLE', 0, 'UNVERIFIABLE'), null, 'UNVERIFIABLE carries no score')
+  assert.strictEqual(scoreFor('NOT_FOUND', 0, 'NOT_FOUND'), null, 'NOT_FOUND carries no score')
+  assert.strictEqual(scoreFor('FALSE', 0, 'UNVERIFIABLE'), 0, 'a real FALSE keeps its 0')
+  assert.strictEqual(scoreFor('TRUE', 1, 'UNVERIFIABLE'), 1, 'a real TRUE keeps its score')
+
   const legalVerdicts = DOMAINS.legal_statute.verdicts
   assert.ok(parse('```json\n{"verdict":"ALTERED"}\n```', legalVerdicts), 'strips fences + parses')
   assert.ok(parse('Sure! {"verdict":"SUPPORTED"} hope that helps', legalVerdicts), 'extracts embedded object')
@@ -88,6 +99,19 @@ import { parseExtractedClaims } from '../lib/pipeline'
 
   const many: Evidence[] = Array.from({ length: 20 }, (_, i) => ev('web', `https://x${i}.com`))
   assert.strictEqual(dedupeAndCap(many, 10).length, 10, 'caps at the requested limit')
+
+  // Per-kind cap: Wikipedia's keyword search answers news queries with
+  // tangential list-articles, and since wiki outranks news/web it was crowding
+  // real reporting out of the pool entirely.
+  const wikiHeavy: Evidence[] = [
+    ...Array.from({ length: 6 }, (_, i) => ev('wiki', `https://w${i}.org`)),
+    ...Array.from({ length: 4 }, (_, i) => ev('news', `https://n${i}.com`)),
+  ]
+  const capped = dedupeAndCap(wikiHeavy, 10, { wiki: 3 })
+  assert.strictEqual(capped.filter((e) => e.kind === 'wiki').length, 3, 'wiki is limited by the per-kind cap')
+  assert.strictEqual(capped.filter((e) => e.kind === 'news').length, 4, 'news survives instead of being crowded out')
+  // Kinds without a cap are unaffected.
+  assert.strictEqual(dedupeAndCap(wikiHeavy, 10).filter((e) => e.kind === 'wiki').length, 6, 'no cap given -> unchanged')
 }
 
 // ── stripHtml: removes tags + entities, collapses whitespace ──
@@ -118,6 +142,63 @@ import { parseExtractedClaims } from '../lib/pipeline'
   )
   assert.ok(newsQuery('a b c').split(' ').length <= 4, 'never exceeds the word cap')
   assert.strictEqual(newsQuery('the of and'), '', 'all-stopword query yields empty (caller skips)')
+}
+
+// ── domain policy: only consumer general-purpose checking may answer from the
+//    model's own memory. Legal/compliance verdicts must stay strictly cited —
+//    a professional acting on a remembered statute is the exact failure this
+//    product exists to prevent. ──
+{
+  assert.strictEqual(DOMAINS.general.allowModelKnowledge, true, 'general may fall back to model knowledge')
+  assert.strictEqual(DOMAINS.legal_statute.allowModelKnowledge, false, 'legal must never answer from memory')
+  assert.strictEqual(DOMAINS.finra_compliance.allowModelKnowledge, false, 'compliance must never answer from memory')
+  // Any domain that forbids model knowledge must be corpus-backed.
+  for (const [key, c] of Object.entries(DOMAINS)) {
+    if (!c.allowModelKnowledge) {
+      assert.strictEqual(c.evidence, 'corpus', `${key} forbids model knowledge so it must be corpus-grounded`)
+    }
+  }
+}
+
+// ── model-knowledge guard: memory may SUPPORT a claim but must never REFUTE
+//    one. A model asked about an unfamiliar local news event will answer "no
+//    such incident occurred" — it did exactly that for a real Sri Lankan
+//    murder case. Mirrors the guard in verifyFromKnowledge(). ──
+{
+  const NOT_FOUND = DOMAINS.general.notFoundVerdict
+  const guard = (verdict: string, score: number | null, confidence: string) => ({
+    verdict: verdict === 'FALSE' ? NOT_FOUND : verdict,
+    truth_score: verdict === 'FALSE' ? null : score,
+    confidence: confidence === 'HIGH' ? 'MEDIUM' : confidence,
+    reference: null,
+  })
+
+  assert.strictEqual(guard('FALSE', 0, 'HIGH').verdict, NOT_FOUND, 'memory can never refute a claim')
+  assert.strictEqual(guard('FALSE', 0, 'HIGH').truth_score, null, 'a refuted-from-memory score is dropped too')
+  assert.strictEqual(guard('TRUE', 1, 'HIGH').verdict, 'TRUE', 'memory may still support a claim')
+  assert.strictEqual(guard('TRUE', 1, 'HIGH').confidence, 'MEDIUM', 'unretrieved knowledge never claims HIGH confidence')
+  assert.strictEqual(guard('MOSTLY_TRUE', 0.9, 'LOW').confidence, 'LOW', 'lower confidences pass through')
+  assert.strictEqual(guard('TRUE', 1, 'MEDIUM').reference, null, 'memory never carries a citation')
+}
+
+// ── geminiKeys: ordered rotation list, blanks skipped — lets a second key
+//    take over when the first hits its daily quota cap. ──
+{
+  const KEYS = ['GEMINI_API_KEY', 'GEMINI_API_KEY_2', 'GEMINI_API_KEY_3'] as const
+  const saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]))
+  KEYS.forEach((k) => delete process.env[k])
+
+  assert.deepStrictEqual(geminiKeys(), [], 'no keys configured -> empty list')
+
+  process.env.GEMINI_API_KEY = 'a'
+  process.env.GEMINI_API_KEY_3 = 'c'
+  assert.deepStrictEqual(geminiKeys(), ['a', 'c'], 'skips the unset middle slot, preserves order')
+
+  process.env.GEMINI_API_KEY_2 = '   '
+  assert.deepStrictEqual(geminiKeys(), ['a', 'c'], 'blank/whitespace key is ignored')
+
+  KEYS.forEach((k) => delete process.env[k])
+  Object.entries(saved).forEach(([k, v]) => { if (v !== undefined) process.env[k] = v })
 }
 
 // ── cache-write guard: a run containing ERROR verdicts must never be persisted.
