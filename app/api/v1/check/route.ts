@@ -1,22 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
 import * as Sentry from '@sentry/nextjs'
-import { checkLimit, type Tier } from '@/lib/ratelimit'
+import { checkLimit } from '@/lib/ratelimit'
 import { runPipeline, type ClaimResult } from '@/lib/pipeline'
 import { getDb } from '@/lib/db'
 import { getRedis, GLOBAL_COUNTER_KEY, FREE_DAILY_CAP, globalDailyKey } from '@/lib/redis'
 import { hashKey, clientIp } from '@/lib/keys'
 import { DOMAINS, DEFAULT_DOMAIN, isDomain, DISCLAIMER, type Domain } from '@/lib/domains'
+import { PLANS, FREE_PLAN, planCanUseDomain, type PlanId } from '@/lib/plans'
 import { verifyTurnstileToken } from '@/lib/turnstile'
 
 export const runtime = 'nodejs'        // pipeline uses node crypto + supabase-js
 export const maxDuration = 60          // Vercel Pro allows 60s; Hobby caps at 10s
 
-type KeyRow = { id: string; tier: string; revoked: boolean } | null
-
-// Anonymous requests are capped to fewer claims than the MAX_CLAIMS a keyed
-// caller gets. Bounds the paid Tavily/GNews spend on the free tier (one search
-// runs per extracted claim) without touching answer quality on short inputs.
-const FREE_MAX_CLAIMS = 3
+// Access derives from the key owner's CURRENT plan (joined live from profiles),
+// never from the key row itself — a downgrade/cancellation via the Polar
+// webhook takes effect on the very next request, no key rotation needed.
+type KeyRow = { id: string; revoked: boolean; plan: PlanId } | null
 
 // Cache freshness: general facts/news move fast, corpus law is stable.
 const CACHE_MAX_AGE_SECONDS: Record<Domain, number> = {
@@ -29,16 +28,14 @@ const CACHE_MAX_AGE_SECONDS: Record<Domain, number> = {
 // quality — the free demo deliberately returns the same verdicts a paid key
 // would, because a weak demo converts nobody.
 const UPGRADE_HINT =
-  'Free tier is limited to 5 checks per hour. Get a free API key for 1,000/hour, programmatic access, saved history, and the Legal and FINRA compliance modes.'
+  'Free tier is limited to 5 checks per hour. Get a free account and API key for 1,000/hour, programmatic access, and saved history — or upgrade to Business for the Legal and FINRA compliance modes.'
 
 // Normalize before hashing: trim + collapse whitespace. Case is preserved (it
-// can carry meaning). Namespaced by domain AND tier: the free tier caps claims
-// lower than a keyed caller, so their results genuinely differ and must not
-// share a cache entry (a free 3-claim result would otherwise be served to a
-// paid caller who should get the full set, and vice versa).
-function inputHash(text: string, domain: Domain, tier: string): string {
+// can carry meaning). Namespaced by domain AND plan: plans differ in maxClaims,
+// so their results genuinely differ and must not share a cache entry.
+function inputHash(text: string, domain: Domain, plan: PlanId): string {
   const normalized = text.trim().replace(/\s+/g, ' ')
-  return hashKey(`${normalized} ${domain} ${tier}`)
+  return hashKey(`${normalized} ${domain} ${plan}`)
 }
 
 function withPercentages(claims: ClaimResult[]) {
@@ -51,7 +48,7 @@ function withPercentages(claims: ClaimResult[]) {
 async function logUsage(params: {
   api_key_id: string | null
   identifier: string
-  tier: 'free' | 'pro'
+  tier: PlanId
   domain: Domain
   claims: number
   llm_calls: number
@@ -77,23 +74,27 @@ async function logUsage(params: {
 
 export async function POST(req: NextRequest) {
   const apiKey = req.headers.get('x-api-key')
-  let tier: 'free' | 'pro' = 'free'
   let keyRow: KeyRow = null
 
-  // ── Resolve API key by HASH (never compare plaintext) ──────────────
+  // ── Resolve API key by HASH (never compare plaintext), plan via live join ──
+  // profiles.plan is written only by the Polar webhook, so this always reflects
+  // current payment status — a lapsed subscription loses access on the very
+  // next request, not just at the next login.
   if (apiKey) {
     const { data } = await getDb()
       .from('api_keys')
-      .select('id, tier, revoked')
+      .select('id, revoked, profiles(plan)')
       .eq('key_hash', hashKey(apiKey))
       .maybeSingle()
 
     if (!data || data.revoked) {
       return NextResponse.json({ error: 'Invalid or revoked API key' }, { status: 401 })
     }
-    tier = 'pro'
-    keyRow = data
+    const profile = Array.isArray(data.profiles) ? data.profiles[0] : data.profiles
+    keyRow = { id: data.id, revoked: data.revoked, plan: (profile?.plan as PlanId) ?? FREE_PLAN }
   }
+
+  const plan: PlanId = keyRow?.plan ?? FREE_PLAN
 
   // ── Validate input at the trust boundary ───────────────────────────
   const body = await req.json().catch(() => null)
@@ -105,12 +106,9 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // ── Rate limit ─────────────────────────────────────────────────────
-  // General free-tier gets its own tighter limiter (search-quota + upgrade
-  // nudge); everything else keeps the existing free/pro limiters.
+  // ── Rate limit (sized per plan — see lib/plans.ts / lib/ratelimit.ts) ────
   const identifier = keyRow ? hashKey(apiKey!) : clientIp(req)
-  const limitTier: Tier = keyRow ? 'pro' : domain === 'general' ? 'general_free' : 'free'
-  const limit = await checkLimit(identifier, limitTier)
+  const limit = await checkLimit(identifier, plan)
 
   const rlHeaders = {
     'X-RateLimit-Limit': String(limit.limit),
@@ -119,26 +117,31 @@ export async function POST(req: NextRequest) {
   }
 
   if (!limit.success) {
-    await logUsage({ api_key_id: keyRow?.id ?? null, identifier, tier, domain, claims: 0, llm_calls: 0, status: 429 })
+    await logUsage({ api_key_id: keyRow?.id ?? null, identifier, tier: plan, domain, claims: 0, llm_calls: 0, status: 429 })
     return NextResponse.json(
       { error: 'Rate limit exceeded', reset: limit.reset, remaining: 0 },
       { status: 429, headers: rlHeaders }
     )
   }
 
-  // ── Paywall: compliance domains are the paid product ───────────────
-  // The free no-signup tier is general-only. DEFAULT_DOMAIN is a corpus domain,
-  // so a keyless caller who omits `domain` lands here — point them at general.
-  if (DOMAINS[domain].proOnly && !keyRow) {
-    await logUsage({ api_key_id: null, identifier, tier, domain, claims: 0, llm_calls: 0, status: 401 })
+  // ── Paywall: domain access is plan-scoped ───────────────────────────
+  // Business is the only plan with the compliance domains (see lib/plans.ts).
+  // DEFAULT_DOMAIN is one of them, so a free/pro caller who omits `domain`
+  // lands here — point them at general, or Business if that's what they need.
+  if (!planCanUseDomain(plan, domain)) {
+    await logUsage({ api_key_id: keyRow?.id ?? null, identifier, tier: plan, domain, claims: 0, llm_calls: 0, status: 401 })
     return NextResponse.json(
-      { error: `The "${domain}" domain requires an API key. Use domain "general" for free access, or get a key at /login.` },
+      {
+        error: keyRow
+          ? `The "${domain}" domain requires a Business plan. Manage your plan at /dashboard.`
+          : `The "${domain}" domain requires an API key. Use domain "general" for free access, or get a key at /login.`,
+      },
       { status: 401, headers: rlHeaders }
     )
   }
 
   if (!body || typeof body.text !== 'string') {
-    await logUsage({ api_key_id: keyRow?.id ?? null, identifier, tier, domain, claims: 0, llm_calls: 0, status: 400 })
+    await logUsage({ api_key_id: keyRow?.id ?? null, identifier, tier: plan, domain, claims: 0, llm_calls: 0, status: 400 })
     return NextResponse.json({ error: 'Body must be JSON with a "text" string field' }, { status: 400, headers: rlHeaders })
   }
   const text = body.text.trim()
@@ -156,20 +159,19 @@ export async function POST(req: NextRequest) {
     if (token || required) {
       const ok = await verifyTurnstileToken(token, identifier)
       if (!ok) {
-        await logUsage({ api_key_id: null, identifier, tier, domain, claims: 0, llm_calls: 0, status: 403 })
+        await logUsage({ api_key_id: null, identifier, tier: plan, domain, claims: 0, llm_calls: 0, status: 403 })
         return NextResponse.json({ error: 'Turnstile verification failed' }, { status: 403, headers: rlHeaders })
       }
     }
   }
 
-  // Every tier gets the full evidence stack. The free no-signup demo IS the
+  // Every plan gets the full evidence stack. The free no-signup demo IS the
   // sales pitch — a deliberately weakened one produces bad verdicts and sells
-  // nothing. Tiers differ on VOLUME (5/hr vs 1000/hr), API access, history and
-  // domains, not on answer quality. Affordable because evidence is now pooled
-  // per request rather than searched per claim.
+  // nothing. Plans differ on VOLUME, claim depth, API access, history and
+  // domains, not on answer quality. Affordable because evidence is pooled per
+  // request rather than searched per claim (see lib/pipeline.ts).
   const fullEvidence = true
-  // Cache namespace differs by tier because the claim cap does (see inputHash).
-  const hash = inputHash(text, domain, keyRow ? 'keyed' : 'free')
+  const hash = inputHash(text, domain, plan)
 
   // ── Response cache: identical input within the freshness window ────
   // supabase-js returns { error } instead of throwing, so check it explicitly.
@@ -185,7 +187,7 @@ export async function POST(req: NextRequest) {
     } else {
       const hit = Array.isArray(cached) ? cached[0] : cached
       if (hit?.response) {
-        await logUsage({ api_key_id: keyRow?.id ?? null, identifier, tier, domain, claims: 0, llm_calls: 0, status: 200 })
+        await logUsage({ api_key_id: keyRow?.id ?? null, identifier, tier: plan, domain, claims: 0, llm_calls: 0, status: 200 })
         return NextResponse.json(
           { ...hit.response, remaining: limit.remaining, cached: true, cached_at: hit.created_at },
           { headers: rlHeaders }
@@ -209,7 +211,7 @@ export async function POST(req: NextRequest) {
       const count = await redis.incr(dayKey)
       if (count === 1) await redis.expire(dayKey, 60 * 60 * 48) // auto-reset, 48h TTL
       if (count > FREE_DAILY_CAP) {
-        await logUsage({ api_key_id: null, identifier, tier, domain, claims: 0, llm_calls: 0, status: 503 })
+        await logUsage({ api_key_id: null, identifier, tier: plan, domain, claims: 0, llm_calls: 0, status: 503 })
         return NextResponse.json(
           {
             error: `The free demo has reached today's shared capacity of ${FREE_DAILY_CAP} checks. ` +
@@ -229,7 +231,7 @@ export async function POST(req: NextRequest) {
   try {
     const result = await runPipeline(text, domain, {
       fullEvidence,
-      maxClaims: keyRow ? undefined : FREE_MAX_CLAIMS,
+      maxClaims: PLANS[plan].maxClaims,
     })
 
     // The payload we both return and persist (volatile fields added per-request).
@@ -252,7 +254,7 @@ export async function POST(req: NextRequest) {
     await logUsage({
       api_key_id: keyRow?.id ?? null,
       identifier,
-      tier,
+      tier: plan,
       domain,
       claims: result.claims.length,
       llm_calls: result.llm_calls,
@@ -297,7 +299,7 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     console.error('pipeline error', e)
     Sentry.captureException(e)
-    await logUsage({ api_key_id: keyRow?.id ?? null, identifier, tier, domain, claims: 0, llm_calls: 0, status: 500 })
+    await logUsage({ api_key_id: keyRow?.id ?? null, identifier, tier: plan, domain, claims: 0, llm_calls: 0, status: 500 })
     return NextResponse.json({ error: 'Verification failed' }, { status: 500, headers: rlHeaders })
   }
 }

@@ -12,34 +12,47 @@ type Check = {
   response: { evidence_level?: string } | null
   created_at: string
 }
+type PlanInfo = { plan: 'free' | 'pro' | 'business'; label: string; subscription_status: string | null; current_period_end: string | null }
+
+const PLAN_LIMITS: Record<PlanInfo['plan'], string> = {
+  free: '5 requests / hour · general fact-checking only',
+  pro: '1,000 requests / hour · general fact-checking',
+  business: '1,000 requests / hour · general + Legal + FINRA compliance',
+}
 
 export default function DashboardClient() {
   const [keys, setKeys] = useState<Key[]>([])
   const [usage, setUsage] = useState<Usage[]>([])
   const [history, setHistory] = useState<Check[]>([])
+  const [planInfo, setPlanInfo] = useState<PlanInfo | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [newKey, setNewKey] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [keyError, setKeyError] = useState('')
   const [copied, setCopied] = useState(false)
 
   const load = useCallback(async () => {
-    const [k, u, h] = await Promise.all([
+    const [k, u, h, p] = await Promise.all([
       fetch('/api/keys').then((r) => r.json()),
       fetch('/api/usage').then((r) => r.json()),
       fetch('/api/history').then((r) => r.json()).catch(() => ({ checks: [] })),
+      fetch('/api/plan').then((r) => r.json()).catch(() => null),
     ])
     setKeys(Array.isArray(k) ? k : [])
     setUsage(Array.isArray(u) ? u : [])
     setHistory(Array.isArray(h?.checks) ? h.checks : [])
+    setPlanInfo(p && p.plan ? p : null)
   }, [])
 
   useEffect(() => { load() }, [load])
 
   async function createKey() {
     setBusy(true)
+    setKeyError('')
     const res = await fetch('/api/keys', { method: 'POST' })
     const data = await res.json()
     if (res.ok) setNewKey(data.key)
+    else setKeyError(data.error || 'Failed to create key')
     setBusy(false)
     load()
   }
@@ -75,6 +88,49 @@ export default function DashboardClient() {
       <div className="max-w-3xl mx-auto px-6 py-12 space-y-8">
         <h1 style={{ fontFamily: 'var(--font-display)' }} className="text-3xl">Dashboard</h1>
 
+        {/* Billing */}
+        <section className="rounded-2xl border p-6" style={{ borderColor: 'var(--line)', background: 'var(--paper)' }}>
+          <div className="flex items-center justify-between mb-1">
+            <h2 className="font-medium">Plan</h2>
+            <span
+              className="text-xs px-2.5 py-1 rounded-md font-medium"
+              style={{
+                color: planInfo?.plan === 'free' ? undefined : 'var(--ink)',
+                background: planInfo?.plan === 'free' ? 'transparent' : 'var(--verdict)',
+                border: planInfo?.plan === 'free' ? '1px solid var(--line)' : 'none',
+              }}
+            >
+              {planInfo?.label ?? 'Free'}
+            </span>
+          </div>
+          <p className="text-sm opacity-50 mb-5">{PLAN_LIMITS[planInfo?.plan ?? 'free']}</p>
+
+          {planInfo?.plan === 'free' ? (
+            <div className="flex flex-wrap gap-3">
+              <a href="/api/checkout?plan=pro"
+                 className="px-4 py-2 rounded-lg text-sm font-medium text-[var(--ink)] transition"
+                 style={{ background: 'var(--verdict)' }}>
+                Upgrade to Pro
+              </a>
+              <a href="/api/checkout?plan=business"
+                 className="px-4 py-2 rounded-lg text-sm font-medium transition border"
+                 style={{ borderColor: 'var(--line)' }}>
+                Upgrade to Business
+              </a>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between">
+              <p className="text-xs opacity-40">
+                {planInfo?.subscription_status && `status: ${planInfo.subscription_status}`}
+                {planInfo?.current_period_end && ` · renews ${new Date(planInfo.current_period_end).toLocaleDateString()}`}
+              </p>
+              <a href="/api/portal" className="text-sm underline underline-offset-4" style={{ color: 'var(--verdict)' }}>
+                Manage subscription
+              </a>
+            </div>
+          )}
+        </section>
+
         {/* Newly created key — shown once */}
         {newKey && (
           <div className="rounded-xl border p-5" style={{ borderColor: 'var(--verdict-dim)' }}>
@@ -95,9 +151,11 @@ export default function DashboardClient() {
           <div className="flex items-center justify-between mb-5">
             <div>
               <h2 className="font-medium">API key</h2>
-              <p className="text-sm opacity-50">Pro tier — 1,000 requests / hour</p>
+              <p className="text-sm opacity-50">
+                {planInfo?.plan === 'free' ? 'Requires a paid plan — upgrade above to generate a key' : PLAN_LIMITS[planInfo?.plan ?? 'free']}
+              </p>
             </div>
-            {!keys.length && (
+            {!keys.length && planInfo?.plan !== 'free' && (
               <button onClick={createKey} disabled={busy}
                 className="px-4 py-2 rounded-lg text-sm font-medium text-[var(--ink)] disabled:opacity-40 transition"
                 style={{ background: 'var(--verdict)' }}>
@@ -105,6 +163,8 @@ export default function DashboardClient() {
               </button>
             )}
           </div>
+
+          {keyError && <p className="text-sm mb-4" style={{ color: 'var(--alter)' }}>{keyError}</p>}
 
           {keys.length ? keys.map((k) => (
             <div key={k.id} className="rounded-lg border p-4 flex items-center justify-between" style={{ borderColor: 'var(--line)' }}>

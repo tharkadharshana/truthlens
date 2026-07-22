@@ -52,11 +52,14 @@ const VERDICT_COLOR: Record<string, string> = {
   ERROR: 'var(--absent)',
 }
 
-type Mode = { id: string; label: string; placeholder: string; example: string }
+// The demo widget always calls the API anonymously (no key) — see run() below.
+// Legal/FINRA are Business-plan-only server-side, so they can never work here;
+// listed as locked so visitors discover them instead of hitting a silent 401.
+type Mode = { id: string; label: string; placeholder: string; example: string; locked?: boolean }
 const MODES: Mode[] = [
   { id: 'general', label: 'General', placeholder: 'Paste any claim, post, or statement in any language…', example: 'Russia is the largest country in the world by land area, and eggs are a type of stone.' },
-  { id: 'legal_statute', label: 'Legal', placeholder: 'Paste a legal claim to verify…', example: 'Section 230 gives online platforms complete immunity from every kind of lawsuit, including federal criminal charges.' },
-  { id: 'finra_compliance', label: 'FINRA', placeholder: 'Paste a financial marketing statement to review…', example: 'Our fund guarantees a 12% annual return with absolutely no risk of loss.' },
+  { id: 'legal_statute', label: 'Legal', placeholder: 'Paste a legal claim to verify…', example: 'Section 230 gives online platforms complete immunity from every kind of lawsuit, including federal criminal charges.', locked: true },
+  { id: 'finra_compliance', label: 'FINRA', placeholder: 'Paste a financial marketing statement to review…', example: 'Our fund guarantees a 12% annual return with absolutely no risk of loss.', locked: true },
 ]
 
 export default function Landing() {
@@ -172,7 +175,7 @@ export default function Landing() {
                     ? { background: 'var(--verdict)', color: 'var(--ink)', fontWeight: 500 }
                     : { opacity: 0.6 }}
                 >
-                  {m.label}
+                  {m.label}{m.locked && ' 🔒'}
                 </button>
               ))}
             </div>
@@ -198,14 +201,22 @@ export default function Landing() {
 
             <div className="flex items-center justify-between mt-4">
               <span className="text-xs opacity-40 ledger">{text.length}/5000</span>
-              <button
-                onClick={run}
-                disabled={loading || text.trim().length < 10 || (!!TURNSTILE_SITE_KEY && !turnstileToken)}
-                className="px-5 py-2.5 rounded-lg font-medium text-[var(--ink)] disabled:opacity-30 transition"
-                style={{ background: 'var(--verdict)' }}
-              >
-                {loading ? 'Examining…' : 'Render verdict'}
-              </button>
+              {mode.locked ? (
+                <a href="/login"
+                   className="px-5 py-2.5 rounded-lg font-medium text-[var(--ink)] transition"
+                   style={{ background: 'var(--verdict)' }}>
+                  Get Business plan to unlock {mode.label} →
+                </a>
+              ) : (
+                <button
+                  onClick={run}
+                  disabled={loading || text.trim().length < 10 || (!!TURNSTILE_SITE_KEY && !turnstileToken)}
+                  className="px-5 py-2.5 rounded-lg font-medium text-[var(--ink)] disabled:opacity-30 transition"
+                  style={{ background: 'var(--verdict)' }}
+                >
+                  {loading ? 'Examining…' : 'Render verdict'}
+                </button>
+              )}
             </div>
 
             {/* Upfront about the free limits — no surprises when a cap is hit. */}
@@ -249,18 +260,19 @@ export default function Landing() {
         <pre className="rounded-xl border p-6 text-sm overflow-auto leading-relaxed" style={{ borderColor: 'var(--line)', background: 'var(--paper)', fontFamily: 'var(--font-mono)' }}>
 {`curl -X POST https://YOUR_DOMAIN/api/v1/check \\
   -H "Content-Type: application/json" \\
-  -H "x-api-key: tl_••••"        # omit for the free tier \\
+  -H "x-api-key: tl_••••"        # omit for the free tier (general only) \\
   -d '{"text": "Russia is the largest country in the world.",
-       "domain": "general"}'   # general | legal_statute | finra_compliance`}
+       "domain": "general"}'   # legal_statute & finra_compliance need a Business-plan key`}
         </pre>
       </section>
 
       {/* Pricing */}
       <section id="pricing" className="px-6 md:px-10 py-16 border-t max-w-5xl mx-auto" style={{ borderColor: 'var(--line)' }}>
         <h2 style={{ fontFamily: 'var(--font-display)' }} className="text-3xl font-medium mb-8">Pricing</h2>
-        <div className="grid md:grid-cols-2 gap-5">
-          <Tier name="Free" price="$0" lines={['5 general checks / hour', 'No key, no sign-up', 'Full web, news & fact-check evidence', 'The same verdicts Pro returns']} cta="Use it above" href="#api" muted />
-          <Tier name="Pro" price="Free in beta" lines={['1,000 requests / hour', 'Programmatic API access', 'All domains: general, legal, FINRA', 'Dashboard & saved history']} cta="Get a key" href="/login" />
+        <div className="grid md:grid-cols-3 gap-5">
+          <Tier name="Free" price="$0" lines={['5 general checks / hour', 'No key, no sign-up', 'Full web, news & fact-check evidence', 'The same verdicts Pro returns', 'A shared daily cap applies']} cta="Use it above" href="#api" muted />
+          <Tier name="Pro" price="$29/mo" lines={['1,000 requests / hour', 'Programmatic API access', 'General fact-checking', 'Dashboard & saved history']} cta="Get started" href="/login" />
+          <Tier name="Business" price="$149/mo" lines={['Everything in Pro', 'Legal statute domain', 'FINRA/SEC compliance domain', 'Built for professional use']} cta="Get started" href="/login" />
         </div>
       </section>
 
