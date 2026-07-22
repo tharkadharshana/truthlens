@@ -283,10 +283,13 @@ Respond ONLY with one JSON object, no prose:
 export async function runPipeline(
   text: string,
   domain: Domain = DEFAULT_DOMAIN,
-  opts: { fullEvidence?: boolean } = {}
+  opts: { fullEvidence?: boolean; maxClaims?: number } = {}
 ): Promise<PipelineResult> {
   const config = DOMAINS[domain]
   const fullEvidence = opts.fullEvidence ?? false
+  // Per-request claim cap. Callers (free tier) can lower it, never raise it
+  // above the hard MAX_CLAIMS guardrail.
+  const cap = Math.min(opts.maxClaims ?? MAX_CLAIMS, MAX_CLAIMS)
   const web = config.evidence === 'web'
   let llm_calls = 0
 
@@ -300,8 +303,8 @@ export async function runPipeline(
   // unusable, so this cannot make extraction worse than before.
   const extracted: ExtractedClaim[] = await extractClaimsLLM(text)
   llm_calls++ // one extraction call
-  const truncated = extracted.length > MAX_CLAIMS
-  const claims = extracted.slice(0, MAX_CLAIMS)
+  const truncated = extracted.length > cap
+  const claims = extracted.slice(0, cap)
 
   // ── Phase 1: retrieve, then POOL ──────────────────────────────────
   // Web mode searches once per claim but every claim is then verified against

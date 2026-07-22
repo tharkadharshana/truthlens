@@ -3,6 +3,7 @@ import * as Sentry from '@sentry/nextjs'
 import { getDb } from '@/lib/db'
 import { getAuthedUser } from '@/lib/auth'
 import { generateKey } from '@/lib/keys'
+import { FREE_PLAN, type PlanId } from '@/lib/plans'
 
 export const runtime = 'nodejs'
 
@@ -24,6 +25,24 @@ export async function POST() {
   const user = await getAuthedUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  // API access is a paid feature. Actual per-request authorization is always
+  // re-derived live from profiles.plan (app/api/v1/check), so this check isn't
+  // what makes billing un-abusable — a free-plan key would just get free-tier
+  // treatment anyway. It exists so free users are steered to checkout instead
+  // of quietly holding a key that does nothing useful yet.
+  const { data: profile } = await getDb()
+    .from('profiles')
+    .select('plan')
+    .eq('id', user.id)
+    .maybeSingle()
+  const plan = (profile?.plan as PlanId) ?? FREE_PLAN
+  if (plan === FREE_PLAN) {
+    return NextResponse.json(
+      { error: 'API access requires a paid plan. Upgrade at /api/checkout?plan=pro or /api/checkout?plan=business.' },
+      { status: 402 }
+    )
+  }
+
   // One active key per user (matches v1 intent).
   const { count } = await getDb()
     .from('api_keys')
@@ -40,7 +59,11 @@ export async function POST() {
     user_id: user.id,
     key_hash: hash,
     key_prefix: prefix,
-    tier: 'pro',
+    // Display-only snapshot of the plan at creation time. Never trusted for
+    // authorization — every request re-derives access from profiles.plan live
+    // (app/api/v1/check/route.ts), so a later upgrade/downgrade/cancellation
+    // takes effect immediately without touching this column or the key itself.
+    tier: plan,
   })
 
   if (error) {

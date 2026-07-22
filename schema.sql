@@ -5,12 +5,25 @@
 create extension if not exists vector;
 create extension if not exists pgcrypto;  -- for digest()
 
--- ── Profiles (public mirror of auth.users) ──────────────────────────
+-- ── Profiles (public mirror of auth.users + billing state) ──────────
+-- plan / subscription_status are the source of truth for paid access; they are
+-- written ONLY by the Polar webhook (app/api/webhooks/polar), never by the user.
+-- Access is derived from payment state, so a lapsed subscription drops to free.
 create table if not exists public.profiles (
   id uuid references auth.users primary key,
   email text not null,
+  polar_customer_id text,
+  plan text not null default 'free',          -- 'free' | 'pro' | 'business' (see lib/plans.ts)
+  subscription_status text,                    -- Polar status: active | canceled | past_due | ...
+  current_period_end timestamptz,
   created_at timestamptz default now()
 );
+-- Idempotent for existing installs (table already created without these columns).
+alter table public.profiles add column if not exists polar_customer_id text;
+alter table public.profiles add column if not exists plan text not null default 'free';
+alter table public.profiles add column if not exists subscription_status text;
+alter table public.profiles add column if not exists current_period_end timestamptz;
+create index if not exists profiles_polar_customer_idx on public.profiles(polar_customer_id);
 
 -- ── API keys (HASHED — raw key shown once at creation, never stored) ─
 create table if not exists public.api_keys (

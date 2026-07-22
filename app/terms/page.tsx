@@ -21,7 +21,7 @@ export default function Terms() {
       </Section>
 
       <Section title="API keys and billing">
-        <p>Free tier: no key required, rate-limited by IP. Pro tier: API key required. Billing is not yet enforced — pricing shown on the landing page is indicative and subject to change before any charges begin.</p>
+        <p>Free tier: no key required, rate-limited by IP and a shared daily cap, general fact-checking only. Pro and Business are paid subscriptions billed through Polar; an API key is issued once a subscription is active and stops working if it lapses or is canceled. Business additionally includes the Legal and FINRA compliance domains. Pricing shown on the landing page may change; you'll be notified of changes affecting an active subscription.</p>
       </Section>
 
       <Section title="Changes">

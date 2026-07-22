@@ -17,6 +17,10 @@ export type DomainConfig = {
   // must stay strictly source-backed — a professional acting on a remembered
   // statute is exactly the failure this product exists to prevent.
   allowModelKnowledge: boolean
+  // Which plan(s) may use this domain is a billing decision, not a domain
+  // property — see lib/plans.ts (PLANS[plan].domains / planCanUseDomain).
+  // Deliberately not duplicated here: which plans unlock a domain changes
+  // independently of what the domain IS.
 }
 
 export const DOMAINS: Record<Domain, DomainConfig> = {

@@ -20,6 +20,7 @@ export default function Privacy() {
         <p>Submitted claim text is sent to third-party AI providers to generate a verdict: Google (Gemini, always, for retrieval) and whichever of Google, OpenAI, or DeepSeek is configured for verdict generation. Each provider processes that text under its own terms — we do not control their retention policies.</p>
         <p>For general fact-checking, your text (or an English translation of it) is also sent as a search query to evidence providers — Wikipedia, Google Fact Check Tools, and, for API-key requests, Tavily and GNews — to retrieve the sources a verdict cites.</p>
         <p>Account, usage, and check-history data is stored with Supabase (Postgres) and Upstash (Redis), both third-party infrastructure providers.</p>
+        <p>If you subscribe to a paid plan, billing and payment processing is handled entirely by Polar.sh — we never see or store your card details. Polar shares your subscription status back to us so we can grant or remove API access.</p>
       </Section>
 
       <Section title="What we don't do">

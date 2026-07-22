@@ -5,7 +5,9 @@ import { generateKey, hashKey, clientIp } from '../lib/keys'
 import { resolveProvider, parseRetryDelaySeconds, isRetryableStatus } from '../lib/llm'
 import { verifyTurnstileToken } from '../lib/turnstile'
 import { DOMAINS, DEFAULT_DOMAIN, isDomain } from '../lib/domains'
+import { PLANS, isPlanId, planCanUseDomain, planForPolarProduct, isActivePolarStatus, subscriptionToProfilePatch } from '../lib/plans'
 import { dedupeAndCap, stripHtml, newsQuery, type Evidence } from '../lib/evidence'
+import { globalDailyKey } from '../lib/redis'
 import { geminiKeys } from '../lib/llm'
 import { parseExtractedClaims } from '../lib/pipeline'
 
@@ -81,6 +83,134 @@ import { parseExtractedClaims } from '../lib/pipeline'
   }
   assert.strictEqual(DOMAINS.general.evidence, 'web', 'general uses web evidence')
   assert.strictEqual(DOMAINS.legal_statute.evidence, 'corpus', 'legal_statute uses corpus evidence')
+}
+
+// ── plans: single source of truth for domain access is lib/plans.ts, not
+//    lib/domains.ts — a domain's own config never says who may use it. ──
+{
+  assert.ok(isPlanId('free') && isPlanId('pro') && isPlanId('business'), 'the three plans are valid ids')
+  assert.ok(!isPlanId('enterprise'), 'an unconfigured plan id is not valid')
+  assert.ok(!isPlanId(undefined), 'undefined is not a valid plan id')
+
+  assert.ok(planCanUseDomain('free', 'general'), 'free can use general')
+  assert.ok(!planCanUseDomain('free', 'legal_statute'), 'free cannot use legal_statute')
+  assert.ok(!planCanUseDomain('pro', 'legal_statute'), 'pro (general-only) cannot use legal_statute either')
+  assert.ok(planCanUseDomain('business', 'legal_statute'), 'business unlocks legal_statute')
+  assert.ok(planCanUseDomain('business', 'finra_compliance'), 'business unlocks finra_compliance')
+
+  // A domain only Business can reach must never allow the model-knowledge
+  // fallback — a paid compliance answer must stay strictly source-backed.
+  for (const [key, c] of Object.entries(DOMAINS)) {
+    const businessOnly = !planCanUseDomain('pro', key as any) && planCanUseDomain('business', key as any)
+    if (businessOnly) assert.strictEqual(c.allowModelKnowledge, false, `${key}: business-only domains must be source-backed only`)
+  }
+
+  for (const [id, p] of Object.entries(PLANS)) {
+    assert.ok(p.maxClaims >= 1 && p.maxClaims <= 8, `${id}.maxClaims must be within the pipeline's [1,8] hard range`)
+    assert.ok(p.rateLimitPerHour > 0, `${id}.rateLimitPerHour must be positive`)
+  }
+}
+
+// ── claim cap clamp (lib/pipeline.ts runPipeline): a plan can never exceed the hard max ──
+{
+  const HARD = 8 // mirrors MAX_CLAIMS in lib/pipeline.ts
+  const capFor = (maxClaims: number | undefined) => Math.min(maxClaims ?? HARD, HARD)
+  assert.strictEqual(capFor(PLANS.free.maxClaims), PLANS.free.maxClaims, 'free plan cap applies as configured')
+  assert.strictEqual(capFor(undefined), HARD, 'no maxClaims specified -> the full hard cap')
+  assert.strictEqual(capFor(50), HARD, 'a caller can never raise the cap above the hard max')
+}
+
+// ── Polar product -> plan mapping: unrecognized products must never grant access ──
+{
+  const savedPro = process.env.POLAR_PRODUCT_PRO
+  const savedBiz = process.env.POLAR_PRODUCT_BUSINESS
+  process.env.POLAR_PRODUCT_PRO = 'prod_pro_test'
+  process.env.POLAR_PRODUCT_BUSINESS = 'prod_biz_test'
+
+  assert.strictEqual(planForPolarProduct('prod_pro_test'), 'pro', 'maps the configured Pro product id')
+  assert.strictEqual(planForPolarProduct('prod_biz_test'), 'business', 'maps the configured Business product id')
+  assert.strictEqual(planForPolarProduct('prod_unknown'), null, 'an unrecognized product id grants nothing')
+  assert.strictEqual(planForPolarProduct(undefined), null, 'a missing product id grants nothing')
+  assert.strictEqual(planForPolarProduct(null), null, 'a null product id grants nothing')
+
+  if (savedPro !== undefined) process.env.POLAR_PRODUCT_PRO = savedPro; else delete process.env.POLAR_PRODUCT_PRO
+  if (savedBiz !== undefined) process.env.POLAR_PRODUCT_BUSINESS = savedBiz; else delete process.env.POLAR_PRODUCT_BUSINESS
+}
+
+// ── Polar subscription status -> access. Only active/trialing grant a plan;
+//    everything else (canceled, past_due, unpaid, incomplete) reverts to free.
+//    This is what makes billing un-abusable: access always tracks live payment
+//    status, never what the event name implies or what a user last had. ──
+{
+  assert.ok(isActivePolarStatus('active'), 'active grants access')
+  assert.ok(isActivePolarStatus('trialing'), 'trialing grants access')
+  assert.ok(!isActivePolarStatus('canceled'), 'canceled (period ended) revokes access')
+  assert.ok(!isActivePolarStatus('past_due'), 'past_due revokes access')
+  assert.ok(!isActivePolarStatus('unpaid'), 'unpaid revokes access')
+  assert.ok(!isActivePolarStatus('incomplete'), 'incomplete (payment never completed) grants nothing')
+  assert.ok(!isActivePolarStatus(null), 'no status at all grants nothing')
+  assert.ok(!isActivePolarStatus(undefined), 'undefined status grants nothing')
+}
+
+// ── subscriptionToProfilePatch: the actual field-mapping the webhook writes to
+//    the DB (app/api/webhooks/polar). Pure, so the DB-write decision is fully
+//    covered without needing a live Polar payload or a database. ──
+{
+  const saved = { pro: process.env.POLAR_PRODUCT_PRO, biz: process.env.POLAR_PRODUCT_BUSINESS }
+  process.env.POLAR_PRODUCT_PRO = 'prod_pro'
+  process.env.POLAR_PRODUCT_BUSINESS = 'prod_biz'
+
+  const active = subscriptionToProfilePatch({
+    status: 'active',
+    productId: 'prod_biz',
+    customerId: 'cust_1',
+    currentPeriodEnd: '2099-01-01T00:00:00Z',
+    customer: { externalId: 'user_123', email: 'a@b.com' },
+  })
+  assert.ok(active, 'a recognized product + active status maps successfully')
+  assert.strictEqual(active!.patch.plan, 'business', 'active subscription grants the mapped plan')
+  assert.strictEqual(active!.externalId, 'user_123', 'external id extracted from customer.externalId')
+
+  const canceled = subscriptionToProfilePatch({
+    status: 'canceled',
+    productId: 'prod_biz',
+    customer: { externalId: 'user_123' },
+  })
+  assert.strictEqual(canceled!.patch.plan, 'free', 'a canceled (period-ended) subscription reverts to free, even though the product is Business')
+
+  const pastDue = subscriptionToProfilePatch({ status: 'past_due', productId: 'prod_pro', customer: { externalId: 'u' } })
+  assert.strictEqual(pastDue!.patch.plan, 'free', 'past_due reverts to free — the event fired but access must not persist')
+
+  const unrecognized = subscriptionToProfilePatch({ status: 'active', productId: 'prod_totally_unknown', customer: { externalId: 'u' } })
+  assert.strictEqual(unrecognized, null, 'an unrecognized product id maps to nothing — never guess or default to a paid plan')
+
+  // Reordered/stale delivery: an onSubscriptionCreated for an already-canceled
+  // sub must not resurrect access just because "created" sounds like a grant.
+  const staleCreate = subscriptionToProfilePatch({ status: 'canceled', productId: 'prod_biz', customer: { externalId: 'u' } })
+  assert.strictEqual(staleCreate!.patch.plan, 'free', 'status governs regardless of which event carried it')
+
+  const snakeCase = subscriptionToProfilePatch({
+    status: 'active',
+    product_id: 'prod_pro',
+    customer_id: 'cust_2',
+    current_period_end: '2099-01-01T00:00:00Z',
+    customer: { external_id: 'user_456' },
+  })
+  assert.strictEqual(snakeCase!.patch.plan, 'pro', 'snake_case field names are also accepted')
+  assert.strictEqual(snakeCase!.externalId, 'user_456', 'snake_case external_id is also accepted')
+
+  if (saved.pro !== undefined) process.env.POLAR_PRODUCT_PRO = saved.pro; else delete process.env.POLAR_PRODUCT_PRO
+  if (saved.biz !== undefined) process.env.POLAR_PRODUCT_BUSINESS = saved.biz; else delete process.env.POLAR_PRODUCT_BUSINESS
+}
+
+// ── global daily circuit-breaker key: one bucket per UTC day, resets at rollover ──
+{
+  const a = globalDailyKey(new Date('2026-07-20T23:59:59Z'))
+  const b = globalDailyKey(new Date('2026-07-21T00:00:01Z'))
+  const a2 = globalDailyKey(new Date('2026-07-20T08:00:00Z'))
+  assert.strictEqual(a, 'truthlens:global:daily:2026-07-20', 'key carries the UTC date')
+  assert.strictEqual(a, a2, 'same UTC day -> same bucket (shared global counter)')
+  assert.notStrictEqual(a, b, 'crossing midnight UTC -> a fresh bucket, so the cap resets daily')
 }
 
 // ── evidence dedupeAndCap: fact-checks rank first, URL dedupe, hard cap ──
